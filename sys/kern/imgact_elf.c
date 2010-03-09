@@ -1009,7 +1009,8 @@ generic_elf_coredump(struct lwp *lp, int sig, struct file *fp, off_t limit)
 	target.buf = kmalloc(target.off_max, M_TEMP, M_WAITOK|M_ZERO);
 
 	error = __elfN(corehdr)(lp, sig, fp, cred, seginfo.count, &target);
-
+	kprintf("xxx: generic_elf_coredump: did elf_corehdr: %d\n", error);
+	
 	/* Write the contents of all of the writable segments. */
 	if (error == 0) {
 		Elf_Phdr *php;
@@ -1020,6 +1021,7 @@ generic_elf_coredump(struct lwp *lp, int sig, struct file *fp, off_t limit)
 		for (i = 0; i < seginfo.count; i++) {
 			error = fp_write(fp, (caddr_t)php->p_vaddr,
 					php->p_filesz, &nbytes, UIO_USERSPACE);
+			kprintf("xxx: generic_elf_coredump: did fp_write: %d\n", error);
 			if (error != 0)
 				break;
 			php++;
@@ -1260,11 +1262,13 @@ __elfN(corehdr)(struct lwp *lp, int sig, struct file *fp, struct ucred *cred,
 	 * it may not be restored from the same file handle.
 	 */
 	error = __elfN(puthdr)(lp, target, sig, WRITE, numsegs, fp);
+	kprintf("xxx: elf_corehdr: did elf_puthdr: %d\n", error);
 
 	/* Write it to the core file. */
 	if (error == 0) {
 		error = fp_write(fp, target->buf, target->off, &nbytes,
 				 UIO_SYSSPACE);
+		kprintf("xxx: elf_corehdr: did fp_write: %d\n", error);
 	}
 	return (error);
 }
@@ -1287,6 +1291,7 @@ __elfN(puthdr)(struct lwp *lp, elf_buf_t target, int sig, enum putmode mode,
 	phdr = target_reserve(target, (numsegs + 1) * sizeof(Elf_Phdr), &error);
 
 	noteoff = target->off;
+/* XXX SJG - why wouldn't error = 0 here? */
 	if (error == 0)
 		elf_putallnotes(lp, target, sig, mode);
 	notesz = target->off - noteoff;
@@ -1378,10 +1383,12 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 		prstatus_t status;
 		prfpregset_t fpregs;
 		prpsinfo_t psinfo;
+		prsavetls_t tls;
 	} *tmpdata;
 	prstatus_t *status;
 	prfpregset_t *fpregs;
 	prpsinfo_t *psinfo;
+	prsavetls_t *tls;
 	struct lwp *lp;
 
 	/*
@@ -1392,11 +1399,13 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 		status = &tmpdata->status;
 		fpregs = &tmpdata->fpregs;
 		psinfo = &tmpdata->psinfo;
+		tls = &tmpdata->tls;
 	} else {
 		tmpdata = NULL;
 		status = NULL;
 		fpregs = NULL;
 		psinfo = NULL;
+		tls = NULL;
 	}
 
 	/*
@@ -1428,6 +1437,7 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 		status->pr_statussz = sizeof(prstatus_t);
 		status->pr_gregsetsz = sizeof(gregset_t);
 		status->pr_fpregsetsz = sizeof(fpregset_t);
+		status->pr_savetlssz = sizeof(prsavetls_t);
 		status->pr_osreldate = osreldate;
 		status->pr_cursig = sig;
 		/*
@@ -1438,6 +1448,9 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 		status->pr_pid = corelp->lwp_tid;
 		fill_regs(corelp, &status->pr_reg);
 		fill_fpregs(corelp, fpregs);
+// XXX SJG	fill_segdescrs(corelp, segdescrs);
+kprintf("xxx - saving out tls data for first thread\n");
+bcopy(&corelp->lwp_thread->td_tls, tls, sizeof *tls);
 	}
 	error =
 	    __elfN(putnote)(target, "CORE", NT_PRSTATUS, status, sizeof *status);
@@ -1445,6 +1458,10 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 		goto exit;
 	error =
 	    __elfN(putnote)(target, "CORE", NT_FPREGSET, fpregs, sizeof *fpregs);
+	if (error)
+		goto exit;
+	error =
+	    elf_putnote(target, "CORE", NT_TLS, tls, sizeof *tls);
 	if (error)
 		goto exit;
 
@@ -1461,6 +1478,9 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 			status->pr_pid = lp->lwp_tid;
 			fill_regs(lp, &status->pr_reg);
 			fill_fpregs(lp, fpregs);
+// XXX SJG
+kprintf("xxx - saving out tls data for another thread\n");
+bcopy(&lp->lwp_thread->td_tls, tls, sizeof *tls);
 		}
 		error = __elfN(putnote)(target, "CORE", NT_PRSTATUS,
 					status, sizeof *status);
@@ -1468,6 +1488,10 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 			goto exit;
 		error = __elfN(putnote)(target, "CORE", NT_FPREGSET,
 					fpregs, sizeof *fpregs);
+		if (error)
+			goto exit;
+		error = elf_putnote(target, "CORE", NT_TLS,
+					tls, sizeof *tls);
 		if (error)
 			goto exit;
 	}
@@ -1505,6 +1529,8 @@ __elfN(putnote)(elf_buf_t target, const char *name, int type,
 	if (dst != NULL)
 		bcopy(desc, dst, note.n_descsz);
 	target->off = roundup2(target->off, sizeof(Elf_Word));
+	
+	kprintf("xxx: elf_putnote returning with: %d\n", error);
 	return (error);
 }
 

@@ -30,8 +30,15 @@
 #ifndef _SYS_PROCFS_H_
 #define _SYS_PROCFS_H_
 
+#ifndef _SYS_PARAM_H_
 #include <sys/param.h>
+#endif
+#ifndef _SYS_REG_H_
 #include <sys/reg.h>
+#endif
+#ifndef _MACHINE_SEGMENTS_H_
+#include <machine/segments.h>
+#endif
 
 typedef struct reg gregset_t;
 typedef struct fpreg fpregset_t;
@@ -53,21 +60,23 @@ typedef struct fpreg fpregset_t;
  * for which each element exists in the structure.
  */
 
-#define PRSTATUS_VERSION	1	/* Current version of prstatus_t */
+#define PRSTATUS_VERSION	2	/* Current version of prstatus_t */
 
 typedef struct prstatus {
-    int		pr_version;	/* Version number of struct (1) */
-    size_t	pr_statussz;	/* sizeof(prstatus_t) (1) */
-    size_t	pr_gregsetsz;	/* sizeof(gregset_t) (1) */
-    size_t	pr_fpregsetsz;	/* sizeof(fpregset_t) (1) */
-    int		pr_osreldate;	/* Kernel version (1) */
-    int		pr_cursig;	/* Current signal (1) */
-    pid_t	pr_pid;		/* Process ID (1) */
-    gregset_t	pr_reg;		/* General purpose registers (1) */
+    int		pr_version;		/* Version number of struct (1) */
+    size_t	pr_statussz;		/* sizeof(prstatus_t) (1) */
+    size_t	pr_gregsetsz;		/* sizeof(gregset_t) (1) */
+    size_t	pr_fpregsetsz;		/* sizeof(fpregset_t) (1) */
+    size_t	pr_savetlssz;		/* sizeof(struct savetls) (2) */
+    int		pr_osreldate;		/* Kernel version (1) */
+    int		pr_cursig;		/* Current signal (1) */
+    pid_t	pr_pid;			/* Process ID (1) */
+    gregset_t	pr_reg;			/* General purpose registers (1) */
 } prstatus_t;
 
 typedef gregset_t prgregset_t[1];
 typedef fpregset_t prfpregset_t;
+typedef struct savetls prsavetls_t;
 
 #define PRARGSZ		80	/* Maximum argument bytes saved */
 

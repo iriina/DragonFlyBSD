@@ -1496,11 +1496,14 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 		 * value.
 		 */
 		status->pr_pid = corelp->lwp_tid;
+		kprintf("xxxx -- store status\n");	
+		kprintf("signal %i pid %i\n", status->pr_cursig, status->pr_pid);	
 		fill_regs(corelp, &status->pr_reg);
 		fill_fpregs(corelp, fpregs);
+
 // XXX SJG	fill_segdescrs(corelp, segdescrs);
-kprintf("xxx - saving out tls data for first thread\n");
-bcopy(&corelp->lwp_thread->td_tls, tls, sizeof *tls);
+		kprintf("xxx - saving out tls data for first thread\n");
+		bcopy(&corelp->lwp_thread->td_tls, tls, sizeof *tls);
 	}
 	error =
 	    elf_putnote(target, "CORE", NT_PRSTATUS, status, sizeof *status);
@@ -1511,7 +1514,7 @@ bcopy(&corelp->lwp_thread->td_tls, tls, sizeof *tls);
 	if (error)
 		goto exit;
 	error =
-	    elf_putnote(target, "CORE", NT_TLS, tls, sizeof *tls);
+	    __elfN(putnote)(target, "CORE", NT_TLS, tls, sizeof *tls);
 	if (error)
 		goto exit;
 
@@ -1529,8 +1532,8 @@ bcopy(&corelp->lwp_thread->td_tls, tls, sizeof *tls);
 			fill_regs(lp, &status->pr_reg);
 			fill_fpregs(lp, fpregs);
 // XXX SJG
-kprintf("xxx - saving out tls data for another thread\n");
-bcopy(&lp->lwp_thread->td_tls, tls, sizeof *tls);
+			kprintf("xxx - saving out tls data for another thread\n");
+			bcopy(&lp->lwp_thread->td_tls, tls, sizeof *tls);
 		}
 		error = elf_putnote(target, "CORE", NT_PRSTATUS,
 					status, sizeof *status);
@@ -1540,7 +1543,7 @@ bcopy(&lp->lwp_thread->td_tls, tls, sizeof *tls);
 					fpregs, sizeof *fpregs);
 		if (error)
 			goto exit;
-		error = elf_putnote(target, "CORE", NT_TLS,
+		error = __elfN(putnote)(target, "CORE", NT_TLS,
 					tls, sizeof *tls);
 		if (error)
 			goto exit;

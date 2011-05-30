@@ -187,8 +187,10 @@ elf_getnotes(struct lwp *lp, struct file *fp, size_t notesz)
 	prfpregset_t *fpregset;
 	prsavetls_t *tls;
 
-	nthreads = (notesz - sizeof(prpsinfo_t))/(sizeof(prstatus_t) + 
-						  sizeof(prfpregset_t));
+	//FIXME: find a valid way to retrieve numthreads on restore
+	nthreads = (notesz - sizeof(prpsinfo_t) - 20)/(sizeof(prstatus_t) + 
+			sizeof(prfpregset_t) + sizeof(prsavetls_t) + 60);
+
 	PRINTF(("reading notes header nthreads=%d\n", nthreads));
 	if (nthreads <= 0 || nthreads > CKPT_MAXTHREADS)
 		return EINVAL;
@@ -308,12 +310,14 @@ elf_loadnotes(struct lwp *lp, prpsinfo_t *psinfo, prstatus_t *status,
 		goto done;
 	}
 	/* XXX lwp handle more than one lwp*/
+	/* XXX restore each thread */
 	if ((error = set_regs(lp, &status->pr_reg)) != 0)
 		goto done;
 	error = set_fpregs(lp, fpregset);
-/* XXX SJG */
-kprintf("xxx: restoring TLS-fu\n");
-bcopy(tls, &lp->lwp_thread->td_tls, sizeof *tls);
+
+	/* XXX SJG */
+	kprintf("xxx: restoring TLS-fu\n");
+	bcopy(tls, &lp->lwp_thread->td_tls, sizeof *tls);
 	strlcpy(p->p_comm, psinfo->pr_fname, sizeof(p->p_comm));
 	/* XXX psinfo->pr_psargs not yet implemented */
  done:	
@@ -377,6 +381,9 @@ elf_demarshalnotes(void *src, prpsinfo_t *psinfo, prstatus_t *status,
 		goto done;
 	error = elf_getnote(src, &off, "CORE", NT_PRSTATUS,
 			   (void **)&status, sizeof(prstatus_t));
+
+	kprintf("xxxx -- restore status\n");	
+	kprintf("signal %i pid %i\n", status->pr_cursig, status->pr_pid);	
 	if (error)
 		goto done;
 	error = elf_getnote(src, &off, "CORE", NT_FPREGSET,
@@ -393,7 +400,7 @@ elf_demarshalnotes(void *src, prpsinfo_t *psinfo, prstatus_t *status,
 	 * of prstatus_t and prfpregset_t
 	 */
 	for (i = 0 ; i < nthreads - 1; i++) {
-		status++; fpregset++;
+		status++; fpregset++; tls++;
 		error = elf_getnote(src, &off, "CORE", NT_PRSTATUS,
 				   (void **)&status, sizeof (prstatus_t));
 		if (error)

@@ -1487,7 +1487,8 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 		status->pr_statussz = sizeof(prstatus_t);
 		status->pr_gregsetsz = sizeof(gregset_t);
 		status->pr_fpregsetsz = sizeof(fpregset_t);
-		status->pr_savetlssz = sizeof(prsavetls_t);
+//		status->pr_savetlssz = sizeof(prsavetls_t);
+		kprintf("xxxx -- tls size %i\n", sizeof(prsavetls_t));	
 		status->pr_osreldate = osreldate;
 		status->pr_cursig = sig;
 		/*

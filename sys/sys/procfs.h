@@ -67,7 +67,7 @@ typedef struct prstatus {
     size_t	pr_statussz;		/* sizeof(prstatus_t) (1) */
     size_t	pr_gregsetsz;		/* sizeof(gregset_t) (1) */
     size_t	pr_fpregsetsz;		/* sizeof(fpregset_t) (1) */
-    size_t	pr_savetlssz;		/* sizeof(struct savetls) (2) */
+//    size_t	pr_savetlssz;		/* sizeof(struct savetls) (2) */
     int		pr_osreldate;		/* Kernel version (1) */
     int		pr_cursig;		/* Current signal (1) */
     pid_t	pr_pid;			/* Process ID (1) */

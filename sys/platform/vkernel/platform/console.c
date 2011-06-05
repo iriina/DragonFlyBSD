@@ -266,6 +266,8 @@ vconssignal(int sig)
 	struct sigaction sa, osa;
 	sigset_t ss, oss;
 
+	kprintf("XXX Signaled console\n");
+
 	tcgetattr(0, &curtio);
 	tcsetattr(0, TCSAFLUSH, &init_tio);
 	bzero(&sa, sizeof(sa));
@@ -322,6 +324,8 @@ vconsinit(struct consdev *cp)
 {
 	struct sigaction sa;
 
+	kprintf("XXX Init console\n");
+
 	vconsole = cp;
 
 	tcgetattr(0, &init_tio);
@@ -331,6 +335,7 @@ vconsinit(struct consdev *cp)
 	sigaction(SIGTSTP, &sa, NULL);
 	sigaction(SIGINT, &sa, NULL);
 	sigaction(SIGTERM, &sa, NULL);
+	sigaction(SIGCKPT, &sa, NULL);
 	atexit(vconscleanup);
 	vcons_set_mode(0);
 }

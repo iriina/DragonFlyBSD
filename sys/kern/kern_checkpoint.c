@@ -285,6 +285,8 @@ done:
 		kfree(ehdr, M_TEMP);
 	if (phdr)
 		kfree(phdr, M_TEMP);
+	
+	lwpsignal(p, lp, 35);
 	TRACE_EXIT;
 	return error;
 }
@@ -294,6 +296,7 @@ elf_loadnotes(struct lwp *lp, prpsinfo_t *psinfo, prstatus_t *status,
 	   prfpregset_t *fpregset, prsavetls_t *tls)
 {
 	struct proc *p = lp->lwp_proc;
+	//struct lwp *nlp;
 	int error;
 
 	/* validate status and psinfo */
@@ -315,10 +318,35 @@ elf_loadnotes(struct lwp *lp, prpsinfo_t *psinfo, prstatus_t *status,
 	error = set_fpregs(lp, fpregset);
 
 	/* XXX SJG */
+	kprintf("Avem la load %i\n", p->p_nthreads);
 	kprintf("xxx: restoring TLS-fu\n");
 	bcopy(tls, &lp->lwp_thread->td_tls, sizeof *tls);
+//	crit_enter();
+//	set_user_TLS();
+//	crit_exit();
+
+	/* Try to recreate another thread */
+#if 0
+	kprintf("xxx restoring a second thread\n");	
+	status++; fpregset++; tls++;
+	// create new thread
+	lwp_rb_tree_RB_INSERT(&p->p_lwp_tree, nlp);
+	//nlp->lwp_cpumask = (cpumask_t)-1;
+	//nlp->lwp_thread ?
+	p->p_nthreads++;
+	p->p_lasttid++;
+	nlp->lwp_proc = p;
+	// append stored info
+	if ((error = set_regs(nlp, &status->pr_reg)) != 0)
+		goto done;
+	error = set_fpregs(nlp, fpregset);
+	bcopy(tls, &nlp->lwp_thread->td_tls, sizeof *tls);
+#endif
+
+	
 	strlcpy(p->p_comm, psinfo->pr_fname, sizeof(p->p_comm));
 	/* XXX psinfo->pr_psargs not yet implemented */
+
  done:	
 	TRACE_EXIT;
 	return error;
@@ -372,6 +400,9 @@ elf_demarshalnotes(void *src, prpsinfo_t *psinfo, prstatus_t *status,
 	int i;
 	int error;
 	size_t off = 0;
+	prstatus_t *status_tmp = status; 
+	prfpregset_t *fpregset_tmp = fpregset;
+	prsavetls_t *tls_tmp = tls;
 
 	TRACE_ENTER;
 	error = elf_getnote(src, &off, "CORE", NT_PRPSINFO,
@@ -399,17 +430,17 @@ elf_demarshalnotes(void *src, prpsinfo_t *psinfo, prstatus_t *status,
 	 * of prstatus_t and prfpregset_t
 	 */
 	for (i = 0 ; i < nthreads - 1; i++) {
-		status++; fpregset++; tls++;
+		status_tmp++; fpregset_tmp++; tls_tmp++;
 		error = elf_getnote(src, &off, "CORE", NT_PRSTATUS,
-				   (void **)&status, sizeof (prstatus_t));
+				   (void **)&status_tmp, sizeof (prstatus_t));
 		if (error)
 			goto done;
 		error = elf_getnote(src, &off, "CORE", NT_FPREGSET,
-				   (void **)&fpregset, sizeof(prfpregset_t));
+				   (void **)&fpregset_tmp, sizeof(prfpregset_t));
 		if (error)
 			goto done;
 		error = elf_getnote(src, &off, "CORE", NT_TLS,
-				    (void **)&tls, sizeof(prsavetls_t));
+				    (void **)&tls_tmp, sizeof(prsavetls_t));
 		if (error)
 			goto done;
 	}

@@ -125,6 +125,7 @@ static void init_sys_memory(char *imageFile);
 static void init_kern_memory(void);
 static void init_globaldata(void);
 static void init_vkernel(void);
+static void init_checkpointing(void);
 static void init_disk(char *diskExp[], int diskFileNum, enum vkdisk_type type); 
 static void init_netif(char *netifExp[], int netifFileNum);
 static void writepid(void);
@@ -360,10 +361,30 @@ main(int ac, char **av)
 	}
 	init_netif(netifFile, netifFileNum);
 	init_exceptions();
+	init_checkpointing();
 	mi_startup();
 	/* NOT REACHED */
 	exit(EX_SOFTWARE);
 }
+
+static void ckptsig(int signo);
+
+static void init_checkpointing(void)
+{ 
+	struct sigaction sa;
+
+	bzero(&sa, sizeof(sa));
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags |= SA_NODEFER;
+	sa.sa_handler = ckptsig;
+	sigaction(SIGCKPT, &sa, NULL);
+
+}
+
+static void ckptsig(int signo)
+{
+	printf("I was checkpointed :D\n");
+} 
 
 /*
  * Initialize system memory.  This is the virtual kernel's 'RAM'.
@@ -662,6 +683,7 @@ init_vkernel(void)
 {
 	struct mdglobaldata *gd;
 
+	printf("XXX Inited vkernel\n");
 	gd = &CPU_prvspace[0].mdglobaldata;
 	bzero(gd, sizeof(*gd));
 

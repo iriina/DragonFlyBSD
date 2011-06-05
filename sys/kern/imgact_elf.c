@@ -1480,6 +1480,7 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 			continue;
 		if (mode != DRYRUN) {
 			status->pr_pid = lp->lwp_tid;
+			kprintf("pid %i\n", status->pr_pid);	
 			fill_regs(lp, &status->pr_reg);
 			fill_fpregs(lp, fpregs);
 // XXX SJG

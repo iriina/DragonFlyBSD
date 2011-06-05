@@ -76,7 +76,7 @@ const char *const sys_signame[NSIG] = {
 	"thrd",				/* 32 */
 	"ckpt",				/* 33 */
 	"ckptx",			/* 34 */
-	"Signal35",			/* 35 */
+	"thaw",				/* 35 */
 	"Signal36",			/* 36 */
 	"Signal37",			/* 37 */
 	"Signal38",			/* 38 */
@@ -146,7 +146,7 @@ const char *const sys_siglist[NSIG] = {
 	"Thread Scheduler",		/* SIGTHR */
 	"CheckPoint",			/* SIGCKPT */
 	"CheckPointExit",		/* SIGCKPTEXIT */
-	"Signal35",			/* 35 */
+	"Restore from checkpoint",	/* SIGTHAW */
 	"Signal36",			/* 36 */
 	"Signal37",			/* 37 */
 	"Signal38",			/* 38 */

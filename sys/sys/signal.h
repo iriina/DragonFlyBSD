@@ -107,6 +107,7 @@
 #define SIGTHR          32      /* Thread interrupt (FreeBSD-5 reserved) */
 #define SIGCKPT         33      /* checkpoint and continue */
 #define SIGCKPTEXIT     34      /* checkpoint and exit */
+#define SIGTHAW		35	/* restore from checkpoint */
 #endif
 
 /*

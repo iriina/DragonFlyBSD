@@ -28,6 +28,7 @@
 
 #include <sys/types.h>
 #include <sys/param.h>
+#include <sys/caps.h>
 #include <sys/proc.h>
 #include <sys/module.h>
 #include <sys/sysent.h>
@@ -75,7 +76,6 @@
 #include <sys/file2.h>
 
 static int elf_loadphdrs(struct file *fp,  Elf_Phdr *phdr, int numsegs);
-static int elf_getnotes(struct lwp *lp, struct file *fp, size_t notesz);
 static int elf_demarshalnotes(void *src, prpsinfo_t *psinfo,
 		 prstatus_t *status, prfpregset_t *fpregset, prsavetls_t *tls,
 		 int nthreads);
@@ -84,6 +84,8 @@ static int elf_loadnotes(struct lwp *, prpsinfo_t *, prstatus_t *,
 static int elf_getsigs(struct lwp *lp, struct file *fp);
 static int elf_getfiles(struct lwp *lp, struct file *fp);
 static int elf_gettextvp(struct proc *p, struct file *fp);
+static int elf_recreate_thread(struct lwp *, prpsinfo_t *, prstatus_t *,
+		prfpregset_t *, prsavetls_t *);
 static char *ckpt_expand_name(const char *name, uid_t uid, pid_t pid);
 
 static int ckptgroup = 0;       /* wheel only, -1 for any group */
@@ -175,55 +177,6 @@ elf_getphdrs(struct file *fp, Elf_Phdr *phdr, size_t nbyte)
 	return error;
 }
 
-
-static int
-elf_getnotes(struct lwp *lp, struct file *fp, size_t notesz)
-{
-	int error;
-	int nthreads;
-	char *note;
-	prpsinfo_t *psinfo;
-	prstatus_t *status;
-	prfpregset_t *fpregset;
-	prsavetls_t *tls;
-
-	//FIXME: find a valid way to retrieve numthreads on restore
-	nthreads = (notesz - sizeof(prpsinfo_t) - 20)/(sizeof(prstatus_t) + 
-			sizeof(prfpregset_t) + sizeof(prsavetls_t) + 60);
-
-	PRINTF(("reading notes header nthreads=%d\n", nthreads));
-	if (nthreads <= 0 || nthreads > CKPT_MAXTHREADS)
-		return EINVAL;
-
-	psinfo  = kmalloc(sizeof(prpsinfo_t), M_TEMP, M_ZERO | M_WAITOK);
-	status  = kmalloc(nthreads*sizeof(prstatus_t), M_TEMP, M_WAITOK);
-	fpregset  = kmalloc(nthreads*sizeof(prfpregset_t), M_TEMP, M_WAITOK);
-	tls	= kmalloc(nthreads*sizeof(prsavetls_t), M_TEMP, M_WAITOK);
-	note = kmalloc(notesz, M_TEMP, M_WAITOK);
-
-	
-	PRINTF(("reading notes section\n"));
-	if ((error = read_check(fp, note, notesz)) != 0)
-		goto done;
-	error = elf_demarshalnotes(note, psinfo, status, fpregset, tls, nthreads);
-	if (error)
-		goto done;
-	/* fetch register state from notes */
-	error = elf_loadnotes(lp, psinfo, status, fpregset, tls);
- done:
-	if (psinfo)
-		kfree(psinfo, M_TEMP);
-	if (status)
-		kfree(status, M_TEMP);
-	if (fpregset)
-		kfree(fpregset, M_TEMP);
-	if (tls)
-		kfree(tls, M_TEMP);
-	if (note)
-		kfree(note, M_TEMP);
-	return error;
-}
-
 static int
 ckpt_thaw_proc(struct lwp *lp, struct file *fp)
 {
@@ -232,6 +185,14 @@ ckpt_thaw_proc(struct lwp *lp, struct file *fp)
 	Elf_Ehdr *ehdr = NULL;
 	int error;
 	size_t nbyte;
+	int i;
+	int nthreads;
+	char *note;
+	size_t notesz;
+	prpsinfo_t *psinfo;
+	prstatus_t *status;
+	prfpregset_t *fpregset;
+	prsavetls_t *tls;
 
 	TRACE_ENTER;
 	
@@ -247,7 +208,31 @@ ckpt_thaw_proc(struct lwp *lp, struct file *fp)
 		goto done;
 
 	/* fetch notes section containing register state */
-	if ((error = elf_getnotes(lp, fp, phdr->p_filesz)) != 0)
+	notesz = phdr->p_filesz;
+   	//FIXME: find a valid way to retrieve numthreads on restore
+	nthreads = (notesz - sizeof(prpsinfo_t) - 20)/(sizeof(prstatus_t) + 
+		sizeof(prfpregset_t) + sizeof(prsavetls_t) + 60);
+	
+	PRINTF(("reading notes header nthreads=%d\n", nthreads));
+	if (nthreads <= 0 || nthreads > CKPT_MAXTHREADS)
+		return EINVAL;
+
+	psinfo  = kmalloc(sizeof(prpsinfo_t), M_TEMP, M_ZERO | M_WAITOK);
+	status  = kmalloc(nthreads*sizeof(prstatus_t), M_TEMP, M_WAITOK);
+	fpregset  = kmalloc(nthreads*sizeof(prfpregset_t), M_TEMP, M_WAITOK);
+	tls	= kmalloc(nthreads*sizeof(prsavetls_t), M_TEMP, M_WAITOK);
+	note = kmalloc(notesz, M_TEMP, M_WAITOK); 
+
+	PRINTF(("reading notes section\n"));
+	if ((error = read_check(fp, note, notesz)) != 0)
+		goto done;
+	error = elf_demarshalnotes(note, psinfo, status, fpregset, tls, nthreads);
+	if (error)
+		goto done;
+
+	/* fetch register state from notes for the first thread */
+	error = elf_loadnotes(lp, psinfo, status, fpregset, tls);
+	if (error)
 		goto done;
 
 	/* fetch program text vnodes */
@@ -267,6 +252,14 @@ ckpt_thaw_proc(struct lwp *lp, struct file *fp)
 	/* handle mappings last in case we are reading from a socket */
 	error = elf_loadphdrs(fp, phdr, ehdr->e_phnum);
 
+	/* recreate the threads */
+	kprintf("core tid %i\n", status->pr_pid);	
+	for (i = 0; i < nthreads-1; i++) {	
+		status++; fpregset++; tls++;
+		kprintf("tid %i\n", status->pr_pid);	
+		elf_recreate_thread(lp, psinfo, status, fpregset, tls);
+	}
+
 	/*
 	 * Set the textvp to the checkpoint file and mark the vnode so
 	 * a future checkpointing of this checkpoint-restored program
@@ -282,12 +275,23 @@ ckpt_thaw_proc(struct lwp *lp, struct file *fp)
 		vref(p->p_textvp);
 	}
 done:
+	if (psinfo)
+		kfree(psinfo, M_TEMP);
+	if (status)
+		kfree(status, M_TEMP);
+	if (fpregset)
+		kfree(fpregset, M_TEMP);
+	if (tls)
+		kfree(tls, M_TEMP);
+	if (note)
+		kfree(note, M_TEMP);
 	if (ehdr)
 		kfree(ehdr, M_TEMP);
 	if (phdr)
 		kfree(phdr, M_TEMP);
 	
-	lwpsignal(p, lp, 35);
+	/* signal THAW */	
+	lwpsignal(p, lp, SIGTHAW);
 	TRACE_EXIT;
 	return error;
 }
@@ -297,7 +301,6 @@ elf_loadnotes(struct lwp *lp, prpsinfo_t *psinfo, prstatus_t *status,
 	   prfpregset_t *fpregset, prsavetls_t *tls)
 {
 	struct proc *p = lp->lwp_proc;
-	//struct lwp *nlp;
 	int error;
 
 	/* validate status and psinfo */
@@ -312,43 +315,142 @@ elf_loadnotes(struct lwp *lp, prpsinfo_t *psinfo, prstatus_t *status,
 		error = EINVAL;
 		goto done;
 	}
-	/* XXX lwp handle more than one lwp*/
-	/* XXX restore each thread */
+	
 	if ((error = set_regs(lp, &status->pr_reg)) != 0)
 		goto done;
 	error = set_fpregs(lp, fpregset);
-
-	/* XXX SJG */
-	kprintf("Avem la load %i\n", p->p_nthreads);
-	kprintf("xxx: restoring TLS-fu\n");
 	bcopy(tls, &lp->lwp_thread->td_tls, sizeof *tls);
-//	crit_enter();
-//	set_user_TLS();
-//	crit_exit();
 
-	/* Try to recreate another thread */
-#if 0
-	kprintf("xxx restoring a second thread\n");	
-	status++; fpregset++; tls++;
-	// create new thread
-	lwp_rb_tree_RB_INSERT(&p->p_lwp_tree, nlp);
-	//nlp->lwp_cpumask = (cpumask_t)-1;
-	//nlp->lwp_thread ?
-	p->p_nthreads++;
-	p->p_lasttid++;
-	nlp->lwp_proc = p;
-	// append stored info
-	if ((error = set_regs(nlp, &status->pr_reg)) != 0)
-		goto done;
-	error = set_fpregs(nlp, fpregset);
-	bcopy(tls, &nlp->lwp_thread->td_tls, sizeof *tls);
-#endif
-
-	
 	strlcpy(p->p_comm, psinfo->pr_fname, sizeof(p->p_comm));
 	/* XXX psinfo->pr_psargs not yet implemented */
 
  done:	
+	TRACE_EXIT;
+	return error;
+}
+
+//TODO: copied from kern/kern_fork.c
+// check the code, we don't want to add useless info
+// on recreating a thread
+// import it from kern_fork or make another method for checkpointing module
+static struct lwp * 
+lwp_fork(struct lwp *origlp, struct proc *destproc, int flags)
+{
+	struct lwp *lp;
+	struct thread *td;
+
+	lp = kmalloc(sizeof(struct lwp), M_LWP, M_WAITOK|M_ZERO);
+
+	lp->lwp_proc = destproc;
+	lp->lwp_vmspace = destproc->p_vmspace;
+	lp->lwp_stat = LSRUN;
+	bcopy(&origlp->lwp_startcopy, &lp->lwp_startcopy,
+			(unsigned) ((caddr_t)&lp->lwp_endcopy -
+				(caddr_t)&lp->lwp_startcopy));
+	lp->lwp_flag |= origlp->lwp_flag & LWP_ALTSTACK;
+	/*
+	 * Set cpbase to the last timeout that occured (not the upcoming
+	 * timeout).
+	 *
+	 * A critical section is required since a timer IPI can update
+	 * scheduler specific data.
+	 */
+	crit_enter();
+	lp->lwp_cpbase = mycpu->gd_schedclock.time -
+		mycpu->gd_schedclock.periodic;
+	destproc->p_usched->heuristic_forking(origlp, lp);
+	crit_exit();
+	lp->lwp_cpumask &= usched_mastermask;
+
+	td = lwkt_alloc_thread(NULL, LWKT_THREAD_STACK, -1, 0);
+	lp->lwp_thread = td;
+	td->td_proc = destproc;
+	td->td_lwp = lp;
+	td->td_switch = cpu_heavy_switch;
+	lwkt_setpri(td, TDPRI_KERN_USER);
+	lwkt_set_comm(td, "%s", destproc->p_comm);
+
+	/*
+	 * cpu_fork will copy and update the pcb, set up the kernel stack,
+	 * and make the child ready to run.
+	 */
+	cpu_fork(origlp, lp, flags);
+	caps_fork(origlp->lwp_thread, lp->lwp_thread);
+	kqueue_init(&lp->lwp_kqueue, destproc->p_fd);
+
+	/*
+	 * Assign a TID to the lp.  Loop until the insert succeeds (returns
+	 * NULL).
+	 */
+	lp->lwp_tid = destproc->p_lasttid;
+	do {
+		if (++lp->lwp_tid < 0)
+			lp->lwp_tid = 1;
+	} while (lwp_rb_tree_RB_INSERT(&destproc->p_lwp_tree, lp) != NULL);
+	destproc->p_lasttid = lp->lwp_tid;
+	destproc->p_nthreads++;
+
+
+	return (lp);
+}
+
+static int
+elf_recreate_thread(struct lwp *lp, prpsinfo_t *psinfo, prstatus_t *status,
+		prfpregset_t *fpregset, prsavetls_t *tls)
+{
+	struct proc *p = lp->lwp_proc;
+	struct lwp *nlp;
+	int error;
+
+	/* validate status and psinfo */
+	TRACE_ENTER;
+	if (status->pr_version != PRSTATUS_VERSION ||
+			status->pr_statussz != sizeof(prstatus_t) ||
+			status->pr_gregsetsz != sizeof(gregset_t) ||
+			status->pr_fpregsetsz != sizeof(fpregset_t) ||
+			psinfo->pr_version != PRPSINFO_VERSION ||
+			psinfo->pr_psinfosz != sizeof(prpsinfo_t)) {
+		PRINTF(("status check failed\n"));
+		error = EINVAL;
+		goto done;
+	}
+
+	/* Try to recreate another thread */
+	kprintf("xxx restoring another thread\n");	
+
+	lwkt_gettoken(&p->p_token);
+	plimit_lwp_fork(p);	/* force exclusive access */
+	nlp = lwp_fork(curthread->td_lwp, p, RFPROC);
+	/** append stored info */
+	if ((error = set_regs(nlp, &status->pr_reg)) != 0)
+		goto fail;
+	error = set_fpregs(nlp, fpregset); 
+	bcopy(tls, &nlp->lwp_thread->td_tls, sizeof *tls);
+
+	kprintf("xxx Before scheduling\n");	
+	/*
+	 * Now schedule the new lwp.
+	 */
+	//TODO: restore in SSLEEP state?
+	p->p_usched->resetpriority(nlp);
+	crit_enter();
+	nlp->lwp_stat = LSRUN;
+	p->p_usched->setrunqueue(nlp);
+	crit_exit();
+	lwkt_reltoken(&p->p_token);
+
+	goto done;
+
+fail:
+	lwp_rb_tree_RB_REMOVE(&p->p_lwp_tree, nlp);
+	--p->p_nthreads;
+	/* lwp_dispose expects an exited lwp, and a held proc */
+	nlp->lwp_flag |= LWP_WEXIT;
+	nlp->lwp_thread->td_flags |= TDF_EXITING;
+	PHOLD(p);
+	lwp_dispose(nlp);
+	lwkt_reltoken(&p->p_token);
+done:
 	TRACE_EXIT;
 	return error;
 }

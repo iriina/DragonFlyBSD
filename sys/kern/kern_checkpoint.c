@@ -190,9 +190,9 @@ ckpt_thaw_proc(struct lwp *lp, struct file *fp)
 	char *note;
 	size_t notesz;
 	prpsinfo_t *psinfo;
-	prstatus_t *status;
-	prfpregset_t *fpregset;
-	prsavetls_t *tls;
+	prstatus_t *status, *p_status;
+	prfpregset_t *fpregset, *p_fpregset;
+	prsavetls_t *tls, *p_tls;
 
 	TRACE_ENTER;
 	
@@ -254,10 +254,13 @@ ckpt_thaw_proc(struct lwp *lp, struct file *fp)
 
 	/* recreate the threads */
 	kprintf("core tid %i\n", status->pr_pid);	
+	p_status = status;
+	p_fpregset = fpregset;
+	p_tls = tls;
 	for (i = 0; i < nthreads-1; i++) {	
-		status++; fpregset++; tls++;
+		p_status++; p_fpregset++; p_tls++;
 		kprintf("tid %i\n", status->pr_pid);	
-		elf_recreate_thread(lp, psinfo, status, fpregset, tls);
+		elf_recreate_thread(lp, psinfo, p_status, p_fpregset, p_tls);
 	}
 
 	/*

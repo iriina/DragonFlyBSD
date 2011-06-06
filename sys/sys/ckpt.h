@@ -1,3 +1,4 @@
+#define DEBUG 1
 /*-
  * Copyright (c) 2003 Kip Macy All rights reserved.
  *

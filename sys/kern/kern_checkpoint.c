@@ -28,7 +28,6 @@
 
 #include <sys/types.h>
 #include <sys/param.h>
-#include <sys/caps.h>
 #include <sys/proc.h>
 #include <sys/module.h>
 #include <sys/sysent.h>
@@ -76,13 +75,12 @@
 #include <sys/file2.h>
 
 static int elf_loadphdrs(struct file *fp,  Elf_Phdr *phdr, int numsegs);
+static int elf_getnotes(struct lwp *lp, struct file *fp, size_t notesz);
 static int elf_demarshalnotes(void *src, prpsinfo_t *psinfo,
-		prstatus_t *status, prfpregset_t *fpregset, prsavetls_t *tls,
-		int nthreads);
+		 prstatus_t *status, prfpregset_t *fpregset, prsavetls_t *tls,
+		 int nthreads);
 static int elf_loadnotes(struct lwp *, prpsinfo_t *, prstatus_t *,
-		prfpregset_t *, prsavetls_t *);
-static int elf_recreate_thread(struct lwp *, prpsinfo_t *, prstatus_t *,
-		prfpregset_t *, prsavetls_t *);
+		 prfpregset_t *, prsavetls_t *);
 static int elf_getsigs(struct lwp *lp, struct file *fp);
 static int elf_getfiles(struct lwp *lp, struct file *fp);
 static int elf_gettextvp(struct proc *p, struct file *fp);
@@ -104,9 +102,9 @@ read_check(struct file *fp, void *buf, size_t nbyte)
 	PRINTF(("reading %d bytes\n", nbyte));
 	error = fp_read(fp, buf, nbyte, &nread, 1, UIO_SYSSPACE);
 	if (error) {
-		PRINTF(("read failed - %d", error));
+                PRINTF(("read failed - %d", error));
 	} else if (nread != nbyte) {
-		PRINTF(("wanted to read %d - read %d\n", nbyte, nread));
+                PRINTF(("wanted to read %d - read %d\n", nbyte, nread));
 		error = EINVAL;
 	}
 	return error;
@@ -122,35 +120,35 @@ elf_gethdr(struct file *fp, Elf_Ehdr *ehdr)
 		goto done;
 	if (!(ehdr->e_ehsize == sizeof(Elf_Ehdr))) {
 		PRINTF(("wrong elf header size: %d\n"
-					"expected size        : %d\n", 
-					ehdr->e_ehsize, sizeof(Elf_Ehdr)));
+		       "expected size        : %d\n", 
+		       ehdr->e_ehsize, sizeof(Elf_Ehdr)));
 		return EINVAL;
 	}
 	if (!(ehdr->e_phentsize == sizeof(Elf_Phdr))) {
 		PRINTF(("wrong program header size: %d\n"
-					"expected size            : %d\n",  
-					ehdr->e_phentsize, sizeof(Elf_Phdr)));
+		       "expected size            : %d\n",  
+		       ehdr->e_phentsize, sizeof(Elf_Phdr)));
 		return EINVAL;
 	}
 
 	if (!(ehdr->e_ident[EI_MAG0] == ELFMAG0 &&
-				ehdr->e_ident[EI_MAG1] == ELFMAG1 &&
-				ehdr->e_ident[EI_MAG2] == ELFMAG2 &&
-				ehdr->e_ident[EI_MAG3] == ELFMAG3 &&
-				ehdr->e_ident[EI_CLASS] == ELF_CLASS &&
-				ehdr->e_ident[EI_DATA] == ELF_DATA &&
-				ehdr->e_ident[EI_VERSION] == EV_CURRENT &&
-				ehdr->e_ident[EI_OSABI] == ELFOSABI_NONE &&
-				ehdr->e_ident[EI_ABIVERSION] == 0)) {
+	      ehdr->e_ident[EI_MAG1] == ELFMAG1 &&
+	      ehdr->e_ident[EI_MAG2] == ELFMAG2 &&
+	      ehdr->e_ident[EI_MAG3] == ELFMAG3 &&
+	      ehdr->e_ident[EI_CLASS] == ELF_CLASS &&
+	      ehdr->e_ident[EI_DATA] == ELF_DATA &&
+	      ehdr->e_ident[EI_VERSION] == EV_CURRENT &&
+	      ehdr->e_ident[EI_OSABI] == ELFOSABI_NONE &&
+	      ehdr->e_ident[EI_ABIVERSION] == 0)) {
 		PRINTF(("bad elf header\n there are %d segments\n",
-					ehdr->e_phnum));
+		       ehdr->e_phnum));
 		return EINVAL;
 
 	}
 	PRINTF(("Elf header size:           %d\n", ehdr->e_ehsize));
 	PRINTF(("Program header size:       %d\n", ehdr->e_phentsize));
 	PRINTF(("Number of Program headers: %d\n", ehdr->e_phnum));
-done:
+ done:
 	return error;
 } 
 
@@ -173,42 +171,22 @@ elf_getphdrs(struct file *fp, Elf_Phdr *phdr, size_t nbyte)
 		PRINTF(("memory size:  %d\n", phdr[i].p_memsz));
 		PRINTF(("\n"));
 	}
-done:
+ done:
 	return error;
 }
 
+
 static int
-ckpt_thaw_proc(struct lwp *lp, struct file *fp)
+elf_getnotes(struct lwp *lp, struct file *fp, size_t notesz)
 {
-	struct proc *p = lp->lwp_proc;
-	Elf_Phdr *phdr = NULL;
-	Elf_Ehdr *ehdr = NULL;
 	int error;
-	size_t nbyte;
-	int i;
 	int nthreads;
 	char *note;
-	size_t notesz;
 	prpsinfo_t *psinfo;
 	prstatus_t *status;
 	prfpregset_t *fpregset;
 	prsavetls_t *tls;
 
-
-	TRACE_ENTER;
-
-	ehdr = kmalloc(sizeof(Elf_Ehdr), M_TEMP, M_ZERO | M_WAITOK);
-
-	if ((error = elf_gethdr(fp, ehdr)) != 0)
-		goto done;
-	nbyte = sizeof(Elf_Phdr) * ehdr->e_phnum; 
-	phdr = kmalloc(nbyte, M_TEMP, M_WAITOK); 
-
-	/* fetch description of program writable mappings */
-	if ((error = elf_getphdrs(fp, phdr, nbyte)) != 0)
-		goto done;
-
-	notesz = phdr->p_filesz;
 	//FIXME: find a valid way to retrieve numthreads on restore
 	nthreads = (notesz - sizeof(prpsinfo_t) - 20)/(sizeof(prstatus_t) + 
 			sizeof(prfpregset_t) + sizeof(prsavetls_t) + 60);
@@ -223,17 +201,53 @@ ckpt_thaw_proc(struct lwp *lp, struct file *fp)
 	tls	= kmalloc(nthreads*sizeof(prsavetls_t), M_TEMP, M_WAITOK);
 	note = kmalloc(notesz, M_TEMP, M_WAITOK);
 
-
+	
 	PRINTF(("reading notes section\n"));
 	if ((error = read_check(fp, note, notesz)) != 0)
 		goto done;
 	error = elf_demarshalnotes(note, psinfo, status, fpregset, tls, nthreads);
 	if (error)
 		goto done;
-	
-	/* fetch register state from notes for the first thread */
+	/* fetch register state from notes */
 	error = elf_loadnotes(lp, psinfo, status, fpregset, tls);
-	if (error)
+ done:
+	if (psinfo)
+		kfree(psinfo, M_TEMP);
+	if (status)
+		kfree(status, M_TEMP);
+	if (fpregset)
+		kfree(fpregset, M_TEMP);
+	if (tls)
+		kfree(tls, M_TEMP);
+	if (note)
+		kfree(note, M_TEMP);
+	return error;
+}
+
+static int
+ckpt_thaw_proc(struct lwp *lp, struct file *fp)
+{
+	struct proc *p = lp->lwp_proc;
+	Elf_Phdr *phdr = NULL;
+	Elf_Ehdr *ehdr = NULL;
+	int error;
+	size_t nbyte;
+
+	TRACE_ENTER;
+	
+	ehdr = kmalloc(sizeof(Elf_Ehdr), M_TEMP, M_ZERO | M_WAITOK);
+
+	if ((error = elf_gethdr(fp, ehdr)) != 0)
+		goto done;
+	nbyte = sizeof(Elf_Phdr) * ehdr->e_phnum; 
+	phdr = kmalloc(nbyte, M_TEMP, M_WAITOK); 
+
+	/* fetch description of program writable mappings */
+	if ((error = elf_getphdrs(fp, phdr, nbyte)) != 0)
+		goto done;
+
+	/* fetch notes section containing register state */
+	if ((error = elf_getnotes(lp, fp, phdr->p_filesz)) != 0)
 		goto done;
 
 	/* fetch program text vnodes */
@@ -253,14 +267,6 @@ ckpt_thaw_proc(struct lwp *lp, struct file *fp)
 	/* handle mappings last in case we are reading from a socket */
 	error = elf_loadphdrs(fp, phdr, ehdr->e_phnum);
 
-	/* recreate the threads */
-	kprintf("core tid %i\n", status->pr_pid);	
-	for (i = 0; i < nthreads-1; i++) {	
-		status++; fpregset++; tls++;
-		kprintf("tid %i\n", status->pr_pid);	
-		elf_recreate_thread(lp, psinfo, status, fpregset, tls);
-	}
-
 	/*
 	 * Set the textvp to the checkpoint file and mark the vnode so
 	 * a future checkpointing of this checkpoint-restored program
@@ -275,196 +281,81 @@ ckpt_thaw_proc(struct lwp *lp, struct file *fp)
 		vsetflags(p->p_textvp, VCKPT);
 		vref(p->p_textvp);
 	}
-done: 
-	if (psinfo)
-		kfree(psinfo, M_TEMP);
-	if (status)
-		kfree(status, M_TEMP);
-	if (fpregset)
-		kfree(fpregset, M_TEMP);
-	if (tls)
-		kfree(tls, M_TEMP);
-	if (note)
-		kfree(note, M_TEMP);
+done:
 	if (ehdr)
 		kfree(ehdr, M_TEMP);
 	if (phdr)
 		kfree(phdr, M_TEMP);
-
+	
 	lwpsignal(p, lp, 35);
 	TRACE_EXIT;
 	return error;
 }
 
-//TODO: copied from kern/kern_fork.c
-// check the code, we don't want to add useless info
-// on recreating a thread
-// import it from kern_fork or make another method for checkpointing module
-static struct lwp * 
-lwp_fork(struct lwp *origlp, struct proc *destproc, int flags)
-{
-	struct lwp *lp;
-	struct thread *td;
-
-	lp = kmalloc(sizeof(struct lwp), M_LWP, M_WAITOK|M_ZERO);
-
-	lp->lwp_proc = destproc;
-	lp->lwp_vmspace = destproc->p_vmspace;
-	lp->lwp_stat = LSRUN;
-	bcopy(&origlp->lwp_startcopy, &lp->lwp_startcopy,
-			(unsigned) ((caddr_t)&lp->lwp_endcopy -
-				(caddr_t)&lp->lwp_startcopy));
-	lp->lwp_flag |= origlp->lwp_flag & LWP_ALTSTACK;
-	/*
-	 * Set cpbase to the last timeout that occured (not the upcoming
-	 * timeout).
-	 *
-	 * A critical section is required since a timer IPI can update
-	 * scheduler specific data.
-	 */
-	crit_enter();
-	lp->lwp_cpbase = mycpu->gd_schedclock.time -
-		mycpu->gd_schedclock.periodic;
-	destproc->p_usched->heuristic_forking(origlp, lp);
-	crit_exit();
-	lp->lwp_cpumask &= usched_mastermask;
-
-	td = lwkt_alloc_thread(NULL, LWKT_THREAD_STACK, -1, 0);
-	lp->lwp_thread = td;
-	td->td_proc = destproc;
-	td->td_lwp = lp;
-	td->td_switch = cpu_heavy_switch;
-	lwkt_setpri(td, TDPRI_KERN_USER);
-	lwkt_set_comm(td, "%s", destproc->p_comm);
-
-	/*
-	 * cpu_fork will copy and update the pcb, set up the kernel stack,
-	 * and make the child ready to run.
-	 */
-	cpu_fork(origlp, lp, flags);
-	caps_fork(origlp->lwp_thread, lp->lwp_thread);
-	kqueue_init(&lp->lwp_kqueue, destproc->p_fd);
-
-	/*
-	 * Assign a TID to the lp.  Loop until the insert succeeds (returns
-	 * NULL).
-	 */
-	lp->lwp_tid = destproc->p_lasttid;
-	do {
-		if (++lp->lwp_tid < 0)
-			lp->lwp_tid = 1;
-	} while (lwp_rb_tree_RB_INSERT(&destproc->p_lwp_tree, lp) != NULL);
-	destproc->p_lasttid = lp->lwp_tid;
-	destproc->p_nthreads++;
-
-
-	return (lp);
-}
-
-static int
-elf_recreate_thread(struct lwp *lp, prpsinfo_t *psinfo, prstatus_t *status,
-		prfpregset_t *fpregset, prsavetls_t *tls)
-{
-	struct proc *p = lp->lwp_proc;
-	struct lwp *nlp;
-	int error;
-
-	/* validate status and psinfo */
-	TRACE_ENTER;
-	if (status->pr_version != PRSTATUS_VERSION ||
-			status->pr_statussz != sizeof(prstatus_t) ||
-			status->pr_gregsetsz != sizeof(gregset_t) ||
-			status->pr_fpregsetsz != sizeof(fpregset_t) ||
-			psinfo->pr_version != PRPSINFO_VERSION ||
-			psinfo->pr_psinfosz != sizeof(prpsinfo_t)) {
-		PRINTF(("status check failed\n"));
-		error = EINVAL;
-		goto done;
-	}
-
-	/* Try to recreate another thread */
-	kprintf("xxx restoring another thread\n");	
-
-	lwkt_gettoken(&p->p_token);
-	plimit_lwp_fork(p);	/* force exclusive access */
-	nlp = lwp_fork(curthread->td_lwp, p, RFPROC);
-	/** append stored info */
-	if ((error = set_regs(nlp, &status->pr_reg)) != 0)
-		goto fail;
-	error = set_fpregs(nlp, fpregset); 
-	bcopy(tls, &nlp->lwp_thread->td_tls, sizeof *tls);
-
-	kprintf("xxx Before scheduling\n");	
-	/*
-	 * Now schedule the new lwp.
-	 */
-	//TODO: restore in SSLEEP state?
-	p->p_usched->resetpriority(nlp);
-	crit_enter();
-	nlp->lwp_stat = LSRUN;
-	p->p_usched->setrunqueue(nlp);
-	crit_exit();
-	lwkt_reltoken(&p->p_token);
-
-	goto done;
-
-fail:
-	lwp_rb_tree_RB_REMOVE(&p->p_lwp_tree, nlp);
-	--p->p_nthreads;
-	/* lwp_dispose expects an exited lwp, and a held proc */
-	nlp->lwp_flag |= LWP_WEXIT;
-	nlp->lwp_thread->td_flags |= TDF_EXITING;
-	PHOLD(p);
-	lwp_dispose(nlp);
-	lwkt_reltoken(&p->p_token);
-done:
-	TRACE_EXIT;
-	return error;
-}
-
-
 static int
 elf_loadnotes(struct lwp *lp, prpsinfo_t *psinfo, prstatus_t *status,
-		prfpregset_t *fpregset, prsavetls_t *tls)
+	   prfpregset_t *fpregset, prsavetls_t *tls)
 {
 	struct proc *p = lp->lwp_proc;
+	//struct lwp *nlp;
 	int error;
 
 	/* validate status and psinfo */
 	TRACE_ENTER;
 	if (status->pr_version != PRSTATUS_VERSION ||
-			status->pr_statussz != sizeof(prstatus_t) ||
-			status->pr_gregsetsz != sizeof(gregset_t) ||
-			status->pr_fpregsetsz != sizeof(fpregset_t) ||
-			psinfo->pr_version != PRPSINFO_VERSION ||
-			psinfo->pr_psinfosz != sizeof(prpsinfo_t)) {
-		PRINTF(("status check failed\n"));
+	    status->pr_statussz != sizeof(prstatus_t) ||
+	    status->pr_gregsetsz != sizeof(gregset_t) ||
+	    status->pr_fpregsetsz != sizeof(fpregset_t) ||
+	    psinfo->pr_version != PRPSINFO_VERSION ||
+	    psinfo->pr_psinfosz != sizeof(prpsinfo_t)) {
+	        PRINTF(("status check failed\n"));
 		error = EINVAL;
 		goto done;
 	}
-	
+	/* XXX lwp handle more than one lwp*/
+	/* XXX restore each thread */
 	if ((error = set_regs(lp, &status->pr_reg)) != 0)
 		goto done;
 	error = set_fpregs(lp, fpregset);
 
 	/* XXX SJG */
+	kprintf("Avem la load %i\n", p->p_nthreads);
 	kprintf("xxx: restoring TLS-fu\n");
 	bcopy(tls, &lp->lwp_thread->td_tls, sizeof *tls);
-	//	crit_enter();
-	//	set_user_TLS();
-	//	crit_exit();
+//	crit_enter();
+//	set_user_TLS();
+//	crit_exit();
 
+	/* Try to recreate another thread */
+#if 0
+	kprintf("xxx restoring a second thread\n");	
+	status++; fpregset++; tls++;
+	// create new thread
+	lwp_rb_tree_RB_INSERT(&p->p_lwp_tree, nlp);
+	//nlp->lwp_cpumask = (cpumask_t)-1;
+	//nlp->lwp_thread ?
+	p->p_nthreads++;
+	p->p_lasttid++;
+	nlp->lwp_proc = p;
+	// append stored info
+	if ((error = set_regs(nlp, &status->pr_reg)) != 0)
+		goto done;
+	error = set_fpregs(nlp, fpregset);
+	bcopy(tls, &nlp->lwp_thread->td_tls, sizeof *tls);
+#endif
+
+	
 	strlcpy(p->p_comm, psinfo->pr_fname, sizeof(p->p_comm));
 	/* XXX psinfo->pr_psargs not yet implemented */
 
-done:	
+ done:	
 	TRACE_EXIT;
 	return error;
 }
 
 static int 
 elf_getnote(void *src, size_t *off, const char *name, unsigned int type,
-		void **desc, size_t descsz) 
+	    void **desc, size_t descsz) 
 {
 	Elf_Note note;
 	int error;
@@ -475,9 +366,9 @@ elf_getnote(void *src, size_t *off, const char *name, unsigned int type,
 		goto done;
 	}
 	bcopy((char *)src + *off, &note, sizeof note);
-
+	
 	PRINTF(("at offset: %d expected note of type: %d - got: %d\n",
-				*off, type, note.n_type));
+	       *off, type, note.n_type));
 	*off += sizeof note;
 	if (type != note.n_type) {
 		TRACE_ERR;
@@ -495,17 +386,17 @@ elf_getnote(void *src, size_t *off, const char *name, unsigned int type,
 		goto done;
 	}
 	if (desc)
-		bcopy((char *)src + *off, *desc, note.n_descsz);
+	        bcopy((char *)src + *off, *desc, note.n_descsz);
 	*off += roundup2(note.n_descsz, sizeof(Elf_Size));
 	error = 0;
-done:
+ done:
 	TRACE_EXIT;
 	return error;
 }
 
 static int
 elf_demarshalnotes(void *src, prpsinfo_t *psinfo, prstatus_t *status, 
-		prfpregset_t *fpregset, prsavetls_t *tls, int nthreads)
+		   prfpregset_t *fpregset, prsavetls_t *tls, int nthreads)
 {
 	int i;
 	int error;
@@ -516,22 +407,22 @@ elf_demarshalnotes(void *src, prpsinfo_t *psinfo, prstatus_t *status,
 
 	TRACE_ENTER;
 	error = elf_getnote(src, &off, "CORE", NT_PRPSINFO,
-			(void **)&psinfo, sizeof(prpsinfo_t));
+			   (void **)&psinfo, sizeof(prpsinfo_t));
 	if (error)
 		goto done;
 	error = elf_getnote(src, &off, "CORE", NT_PRSTATUS,
-			(void **)&status, sizeof(prstatus_t));
+			   (void **)&status, sizeof(prstatus_t));
 
 	kprintf("xxxx -- restore status\n");	
 	kprintf("signal %i pid %i\n", status->pr_cursig, status->pr_pid);	
 	if (error)
 		goto done;
 	error = elf_getnote(src, &off, "CORE", NT_FPREGSET,
-			(void **)&fpregset, sizeof(prfpregset_t));
+			   (void **)&fpregset, sizeof(prfpregset_t));
 	if (error)
 		goto done;
 	error = elf_getnote(src, &off, "CORE", NT_TLS,
-			(void **)&tls, sizeof(prsavetls_t));
+			    (void **)&tls, sizeof(prsavetls_t));
 	if (error)
 		goto done;
 
@@ -542,20 +433,20 @@ elf_demarshalnotes(void *src, prpsinfo_t *psinfo, prstatus_t *status,
 	for (i = 0 ; i < nthreads - 1; i++) {
 		status_tmp++; fpregset_tmp++; tls_tmp++;
 		error = elf_getnote(src, &off, "CORE", NT_PRSTATUS,
-				(void **)&status_tmp, sizeof (prstatus_t));
+				   (void **)&status_tmp, sizeof (prstatus_t));
 		if (error)
 			goto done;
 		error = elf_getnote(src, &off, "CORE", NT_FPREGSET,
-				(void **)&fpregset_tmp, sizeof(prfpregset_t));
+				   (void **)&fpregset_tmp, sizeof(prfpregset_t));
 		if (error)
 			goto done;
 		error = elf_getnote(src, &off, "CORE", NT_TLS,
-				(void **)&tls_tmp, sizeof(prsavetls_t));
+				    (void **)&tls_tmp, sizeof(prsavetls_t));
 		if (error)
 			goto done;
 	}
-
-done:
+	
+ done:
 	TRACE_EXIT;
 	return error;
 }
@@ -587,7 +478,7 @@ mmap_phdr(struct file *fp, Elf_Phdr *phdr)
 		PRINTF(("mmap failed: %d\n", error);	   );
 	}
 	PRINTF(("map @%08x-%08x fileoff %08x-%08x\n", (int)addr,
-				(int)((char *)addr + len), (int)pos, (int)(pos + len)));
+		   (int)((char *)addr + len), (int)pos, (int)(pos + len)));
 	TRACE_EXIT;
 	return error;
 }
@@ -634,7 +525,7 @@ elf_getsigs(struct lwp *lp, struct file *fp)
 	/* XXX lwp handle more than one lwp */
 	bcopy(&csi->csi_sigmask, &lp->lwp_sigmask, sizeof(sigset_t));
 	p->p_sigparent = csi->csi_sigparent;
-done:
+ done:
 	if (csi)
 		kfree(csi, M_TEMP);
 	TRACE_EXIT;
@@ -656,14 +547,14 @@ ckpt_fhtovp(fhandle_t *fh, struct vnode **vpp)
 	if (!mp) {
 		TRACE_ERR;
 		PRINTF(("failed to get mount - ESTALE\n"));
-		TRACE_EXIT;
+	        TRACE_EXIT;
 		return ESTALE;
 	}
 	error = VFS_FHTOVP(mp, NULL, &fh->fh_fid, vpp);
 	if (error) {
 		PRINTF(("failed with: %d\n", error));
 		TRACE_ERR;
-		TRACE_EXIT;
+	        TRACE_EXIT;
 		return error;
 	}
 	TRACE_EXIT;
@@ -710,14 +601,14 @@ elf_gettextvp(struct proc *p, struct file *fp)
 	if ((error = read_check(fp, &vminfo, sizeof(vminfo))) != 0)
 		goto done;
 	if (vminfo.cvm_dsize < 0 || 
-			vminfo.cvm_dsize > p->p_rlimit[RLIMIT_DATA].rlim_cur ||
-			vminfo.cvm_tsize < 0 ||
-			(u_quad_t)vminfo.cvm_tsize > maxtsiz ||
-			vminfo.cvm_daddr >= (caddr_t)VM_MAX_USER_ADDRESS ||
-			vminfo.cvm_taddr >= (caddr_t)VM_MAX_USER_ADDRESS
-	   ) {
-		error = ERANGE;
-		goto done;
+	    vminfo.cvm_dsize > p->p_rlimit[RLIMIT_DATA].rlim_cur ||
+	    vminfo.cvm_tsize < 0 ||
+	    (u_quad_t)vminfo.cvm_tsize > maxtsiz ||
+	    vminfo.cvm_daddr >= (caddr_t)VM_MAX_USER_ADDRESS ||
+	    vminfo.cvm_taddr >= (caddr_t)VM_MAX_USER_ADDRESS
+	) {
+	    error = ERANGE;
+	    goto done;
 	}
 
 	vmspace_exec(p, NULL);
@@ -734,8 +625,8 @@ elf_gettextvp(struct proc *p, struct file *fp)
 		if ((error = mmap_vp(&vnh[i])) != 0)
 			goto done;
 	}
-
-done:
+	
+ done:
 	if (vnh)
 		kfree(vnh, M_TEMP);
 	TRACE_EXIT;
@@ -806,7 +697,7 @@ elf_getfiles(struct lwp *lp, struct file *fp)
 			error = ckpt_fhtovp(&cfi->cfi_fh, &vp);
 			if (error == 0) {
 				error = fp_vpopen(vp, OFLAGS(cfi->cfi_flags),
-						&tempfp);
+						  &tempfp);
 				if (error)
 					vput(vp);
 			}
@@ -821,7 +712,7 @@ elf_getfiles(struct lwp *lp, struct file *fp)
 		 * have not already closed.
 		 */
 		if (cfi->cfi_index < fdp->fd_nfiles &&
-				(ofp = fdp->fd_files[cfi->cfi_index].fp) != NULL) {
+		    (ofp = fdp->fd_files[cfi->cfi_index].fp) != NULL) {
 			kern_close(cfi->cfi_index);
 		}
 
@@ -830,7 +721,7 @@ elf_getfiles(struct lwp *lp, struct file *fp)
 		 */
 		if (fdalloc(lp->lwp_proc, cfi->cfi_index, &fd) != 0) {
 			PRINTF(("can't currently restore fd: %d\n",
-						cfi->cfi_index));
+			       cfi->cfi_index));
 			fp_close(fp);
 			goto done;
 		}
@@ -841,7 +732,7 @@ elf_getfiles(struct lwp *lp, struct file *fp)
 		PRINTF(("restoring %d\n", cfi->cfi_index));
 	}
 
-done:
+ done:
 	if (cfi_base)
 		kfree(cfi_base, M_TEMP);
 	TRACE_EXIT;
@@ -857,14 +748,14 @@ ckpt_freeze_proc(struct lwp *lp, struct file *fp)
 
 	lwkt_gettoken(&p->p_token);	/* needed for proc_*() calls */
 
-	PRINTF(("calling generic_elf_coredump\n"));
+        PRINTF(("calling generic_elf_coredump\n"));
 	limit = p->p_rlimit[RLIMIT_CORE].rlim_cur;
 	if (limit) {
 		proc_stop(p);
 		while (p->p_nstopped < p->p_nthreads - 1)
 			tsleep(&p->p_nstopped, 0, "freeze", 1);
 		error = generic_elf_coredump(lp, SIGCKPT, fp, limit);
-		PRINTF(("xxx: generic_elf_coredump returned: %d\n", error));
+PRINTF(("xxx: generic_elf_coredump returned: %d\n", error));
 		proc_unstop(p);
 	} else {
 		error = ERANGE;
@@ -879,7 +770,7 @@ ckpt_freeze_proc(struct lwp *lp, struct file *fp)
 int 
 sys_sys_checkpoint(struct sys_checkpoint_args *uap)
 {
-	int error = 0;
+        int error = 0;
 	struct thread *td = curthread;
 	struct proc *p = td->td_proc;
 	struct filedesc *fdp = p->p_fd;
@@ -901,33 +792,33 @@ sys_sys_checkpoint(struct sys_checkpoint_args *uap)
 	get_mplock();
 
 	switch (uap->type) {
-		case CKPT_FREEZE:
-			fp = NULL;
-			if (uap->fd == -1 && uap->pid == (pid_t)-1)
-				error = checkpoint_signal_handler(td->td_lwp);
-			else if ((fp = holdfp(fdp, uap->fd, FWRITE)) == NULL)
-				error = EBADF;
-			else
-				error = ckpt_freeze_proc(td->td_lwp, fp);
-			if (fp)
-				fdrop(fp);
-			break;
-		case CKPT_THAW:
-			if (uap->pid != -1) {
-				error = EINVAL;
-				break;
-			}
-			if ((fp = holdfp(fdp, uap->fd, FREAD)) == NULL) {
-				error = EBADF;
-				break;
-			}
-			uap->sysmsg_result = uap->retval;
-			error = ckpt_thaw_proc(td->td_lwp, fp);
+	case CKPT_FREEZE:
+		fp = NULL;
+		if (uap->fd == -1 && uap->pid == (pid_t)-1)
+			error = checkpoint_signal_handler(td->td_lwp);
+		else if ((fp = holdfp(fdp, uap->fd, FWRITE)) == NULL)
+			error = EBADF;
+		else
+			error = ckpt_freeze_proc(td->td_lwp, fp);
+		if (fp)
 			fdrop(fp);
+		break;
+	case CKPT_THAW:
+		if (uap->pid != -1) {
+			error = EINVAL;
 			break;
-		default:
-			error = EOPNOTSUPP;
+		}
+		if ((fp = holdfp(fdp, uap->fd, FREAD)) == NULL) {
+			error = EBADF;
 			break;
+		}
+		uap->sysmsg_result = uap->retval;
+	        error = ckpt_thaw_proc(td->td_lwp, fp);
+		fdrop(fp);
+		break;
+	default:
+	        error = EOPNOTSUPP;
+		break;
 	}
 	rel_mplock();
 	return error;
@@ -961,9 +852,9 @@ checkpoint_signal_handler(struct lwp *lp)
 	}
 
 	log(LOG_INFO, "pid %d (%s), uid %d: checkpointing to %s\n",
-			p->p_pid, p->p_comm, 
-			(td->td_ucred ? td->td_ucred->cr_uid : -1),
-			buf);
+		p->p_pid, p->p_comm, 
+		(td->td_ucred ? td->td_ucred->cr_uid : -1),
+		buf);
 
 	PRINTF(("ckpt handler called, using '%s'\n", buf));
 
@@ -993,7 +884,7 @@ checkpoint_signal_handler(struct lwp *lp)
 
 static char ckptfilename[MAXPATHLEN] = {"%N.ckpt"};
 SYSCTL_STRING(_kern, OID_AUTO, ckptfile, CTLFLAG_RW, ckptfilename,
-		sizeof(ckptfilename), "process checkpoint name format string");
+	      sizeof(ckptfilename), "process checkpoint name format string");
 
 /*
  * expand_name(name, uid, pid)
@@ -1009,7 +900,8 @@ SYSCTL_STRING(_kern, OID_AUTO, ckptfile, CTLFLAG_RW, ckptfilename,
  * -- taken from the coredump code
  */
 
-static char *
+static
+char *
 ckpt_expand_name(const char *name, uid_t uid, pid_t pid)
 {
 	char *temp;
@@ -1039,50 +931,50 @@ ckpt_expand_name(const char *name, uid_t uid, pid_t pid)
 	for (i= 0; n < MAXPATHLEN && format[i]; i++) {
 		int l;
 		switch (format[i]) {
-			case '%':	/* Format character */
-				i++;
-				switch (format[i]) {
-					case '%':
-						temp[n++] = '%';
-						break;
-					case 'N':	/* process name */
-						if ((n + namelen) > MAXPATHLEN) {
-							log(LOG_ERR, "pid %d (%s), uid (%u):  Path `%s%s' is too long\n",
-									pid, name, uid, temp, name);
-							kfree(temp, M_TEMP);
-							return NULL;
-						}
-						memcpy(temp+n, name, namelen);
-						n += namelen;
-						break;
-					case 'P':	/* process id */
-						l = ksprintf(buf, "%u", pid);
-						if ((n + l) > MAXPATHLEN) {
-							log(LOG_ERR, "pid %d (%s), uid (%u):  Path `%s%s' is too long\n",
-									pid, name, uid, temp, name);
-							kfree(temp, M_TEMP);
-							return NULL;
-						}
-						memcpy(temp+n, buf, l);
-						n += l;
-						break;
-					case 'U':	/* user id */
-						l = ksprintf(buf, "%u", uid);
-						if ((n + l) > MAXPATHLEN) {
-							log(LOG_ERR, "pid %d (%s), uid (%u):  Path `%s%s' is too long\n",
-									pid, name, uid, temp, name);
-							kfree(temp, M_TEMP);
-							return NULL;
-						}
-						memcpy(temp+n, buf, l);
-						n += l;
-						break;
-					default:
-						log(LOG_ERR, "Unknown format character %c in `%s'\n", format[i], format);
+		case '%':	/* Format character */
+			i++;
+			switch (format[i]) {
+			case '%':
+				temp[n++] = '%';
+				break;
+			case 'N':	/* process name */
+				if ((n + namelen) > MAXPATHLEN) {
+					log(LOG_ERR, "pid %d (%s), uid (%u):  Path `%s%s' is too long\n",
+					    pid, name, uid, temp, name);
+					kfree(temp, M_TEMP);
+					return NULL;
 				}
+				memcpy(temp+n, name, namelen);
+				n += namelen;
+				break;
+			case 'P':	/* process id */
+				l = ksprintf(buf, "%u", pid);
+				if ((n + l) > MAXPATHLEN) {
+					log(LOG_ERR, "pid %d (%s), uid (%u):  Path `%s%s' is too long\n",
+					    pid, name, uid, temp, name);
+					kfree(temp, M_TEMP);
+					return NULL;
+				}
+				memcpy(temp+n, buf, l);
+				n += l;
+				break;
+			case 'U':	/* user id */
+				l = ksprintf(buf, "%u", uid);
+				if ((n + l) > MAXPATHLEN) {
+					log(LOG_ERR, "pid %d (%s), uid (%u):  Path `%s%s' is too long\n",
+					    pid, name, uid, temp, name);
+					kfree(temp, M_TEMP);
+					return NULL;
+				}
+				memcpy(temp+n, buf, l);
+				n += l;
 				break;
 			default:
-				temp[n++] = format[i];
+			  	log(LOG_ERR, "Unknown format character %c in `%s'\n", format[i], format);
+			}
+			break;
+		default:
+			temp[n++] = format[i];
 		}
 	}
 	temp[n] = '\0';

@@ -1046,7 +1046,7 @@ generic_elf_coredump(struct lwp *lp, int sig, struct file *fp, off_t limit)
 	 * size is calculated.
 	 */
 	bzero(&target, sizeof(target));
-	elf_puthdr(lp, &target, sig, DRYRUN, seginfo.count, fp);
+	__elfN(puthdr)(lp, &target, sig, DRYRUN, seginfo.count, fp);
 
 	if (target.off + seginfo.vsize >= limit)
 		return (EFAULT);
@@ -1059,7 +1059,7 @@ generic_elf_coredump(struct lwp *lp, int sig, struct file *fp, off_t limit)
 	target.off = 0;
 	target.buf = kmalloc(target.off_max, M_TEMP, M_WAITOK|M_ZERO);
 
-	error = elf_corehdr(lp, sig, fp, cred, seginfo.count, &target);
+	error = __elfN(corehdr)(lp, sig, fp, cred, seginfo.count, &target);
 	kprintf("xxx: generic_elf_coredump: did elf_corehdr: %d\n", error);
 	
 	/* Write the contents of all of the writable segments. */
@@ -1312,7 +1312,7 @@ elf_corehdr(struct lwp *lp, int sig, struct file *fp, struct ucred *cred,
 	 * a checkpoint file pointer within the core file itself, because
 	 * it may not be restored from the same file handle.
 	 */
-	error = elf_puthdr(lp, target, sig, WRITE, numsegs, fp);
+	error = __elfN(puthdr)(lp, target, sig, WRITE, numsegs, fp);
 	kprintf("xxx: elf_corehdr: did elf_puthdr: %d\n", error);
 
 	/* Write it to the core file. */
@@ -1515,7 +1515,7 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 	if (error)
 		goto exit;
 	error =
-	    elf_putnote(target, "CORE", NT_TLS, tls, sizeof *tls);
+	    __elfN(putnote)(target, "CORE", NT_TLS, tls, sizeof *tls);
 	if (error)
 		goto exit;
 
@@ -1545,7 +1545,7 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 					fpregs, sizeof *fpregs);
 		if (error)
 			goto exit;
-		error = elf_putnote(target, "CORE", NT_TLS,
+		error = __elfN(putnote)(target, "CORE", NT_TLS,
 					tls, sizeof *tls);
 		if (error)
 			goto exit;

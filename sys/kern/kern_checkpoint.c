@@ -79,14 +79,16 @@ static int elf_loadphdrs(struct file *fp,  Elf_Phdr *phdr, int numsegs);
 static int elf_demarshalnotes(void *src, prpsinfo_t *psinfo,
 		 prstatus_t *status, prfpregset_t *fpregset, prsavetls_t *tls,
 		 int nthreads);
-static int elf_loadnotes(struct lwp *, prpsinfo_t *, prstatus_t *,
-		 prfpregset_t *, prsavetls_t *);
+enum lptype {MAIN, SECOND};
+static int elf_loadnotes(struct lwp *, prstatus_t *,
+		 prfpregset_t *, prsavetls_t *, enum lptype);
+static int elf_getpsinfo(struct lwp *, prpsinfo_t *);
 static int elf_getsigs(struct lwp *lp, struct file *fp);
 static int elf_getfiles(struct lwp *lp, struct file *fp);
 static int elf_gettextvp(struct proc *p, struct file *fp);
-static int elf_recreate_thread(struct lwp *, prpsinfo_t *, prstatus_t *,
-		prfpregset_t *, prsavetls_t *);
 static char *ckpt_expand_name(const char *name, uid_t uid, pid_t pid);
+static struct lwp *lwp_fork(struct lwp *, struct proc *, int );
+
 
 static int ckptgroup = 0;       /* wheel only, -1 for any group */
 SYSCTL_INT(_kern, OID_AUTO, ckptgroup, CTLFLAG_RW, &ckptgroup, 0, "");
@@ -230,8 +232,13 @@ ckpt_thaw_proc(struct lwp *lp, struct file *fp)
 	if (error)
 		goto done;
 
+	/* fetch psinfo */
+	error = elf_getpsinfo(lp, psinfo);
+	if (error)
+		goto done;
+
 	/* fetch register state from notes for the first thread */
-	error = elf_loadnotes(lp, psinfo, status, fpregset, tls);
+	error = elf_loadnotes(lp, status, fpregset, tls, MAIN);
 	if (error)
 		goto done;
 
@@ -240,10 +247,8 @@ ckpt_thaw_proc(struct lwp *lp, struct file *fp)
 		goto done;
 
 	/* fetch signal disposition */
-	if ((error = elf_getsigs(lp, fp)) != 0) {
-		kprintf("failure in recovering signals\n");
+	if ((error = elf_getsigs(lp, fp)) != 0) 
 		goto done;
-	}
 
 	/* fetch open files */
 	if ((error = elf_getfiles(lp, fp)) != 0)
@@ -259,8 +264,10 @@ ckpt_thaw_proc(struct lwp *lp, struct file *fp)
 	p_tls = tls;
 	for (i = 0; i < nthreads-1; i++) {	
 		p_status++; p_fpregset++; p_tls++;
-		kprintf("tid %i\n", status->pr_pid);	
-		elf_recreate_thread(lp, psinfo, p_status, p_fpregset, p_tls);
+		kprintf("tid %i\n", p_status->pr_pid);	
+		error = elf_loadnotes(lp, p_status, p_fpregset, p_tls, SECOND);
+		if (error)
+			goto done;
 	}
 
 	/*
@@ -277,6 +284,7 @@ ckpt_thaw_proc(struct lwp *lp, struct file *fp)
 		vsetflags(p->p_textvp, VCKPT);
 		vref(p->p_textvp);
 	}
+
 done:
 	if (psinfo)
 		kfree(psinfo, M_TEMP);
@@ -300,42 +308,98 @@ done:
 }
 
 static int
-elf_loadnotes(struct lwp *lp, prpsinfo_t *psinfo, prstatus_t *status,
-	   prfpregset_t *fpregset, prsavetls_t *tls)
+elf_getpsinfo(struct lwp *lp, prpsinfo_t *psinfo)
 {
 	struct proc *p = lp->lwp_proc;
 	int error;
+	
+	TRACE_ENTER;
+	if (psinfo->pr_version != PRPSINFO_VERSION ||
+	    psinfo->pr_psinfosz != sizeof(prpsinfo_t)) {
+	        PRINTF(("psinfo check failed\n"));
+		error = EINVAL;
+		goto done;
+	}
+	strlcpy(p->p_comm, psinfo->pr_fname, sizeof(p->p_comm));
+	/* XXX psinfo->pr_psargs not yet implemented */
 
-	/* validate status and psinfo */
+done:
+	TRACE_EXIT;
+	return error;
+}
+
+static int
+elf_loadnotes(struct lwp *lp, prstatus_t *status,
+	   prfpregset_t *fpregset, prsavetls_t *tls, enum lptype type)
+{
+	struct proc *p = lp->lwp_proc;
+	struct lwp *nlp;
+	int error;
+
+	/* validate status */
 	TRACE_ENTER;
 	if (status->pr_version != PRSTATUS_VERSION ||
 	    status->pr_statussz != sizeof(prstatus_t) ||
 	    status->pr_gregsetsz != sizeof(gregset_t) ||
 	    status->pr_fpregsetsz != sizeof(fpregset_t) ||
-	    psinfo->pr_version != PRPSINFO_VERSION ||
-	    psinfo->pr_psinfosz != sizeof(prpsinfo_t)) {
-	        PRINTF(("status check failed\n"));
+		status->pr_savetlssz  != sizeof(prsavetls_t) ||
+		status->pr_sigsetsz != sizeof(sigset_t)) {
 		error = EINVAL;
 		goto done;
 	}
 	
-	if ((error = set_regs(lp, &status->pr_reg)) != 0)
-		goto done;
-	error = set_fpregs(lp, fpregset);
-	bcopy(tls, &lp->lwp_thread->td_tls, sizeof *tls);
+	if (type == MAIN) 
+		nlp = lp;		
 
-	strlcpy(p->p_comm, psinfo->pr_fname, sizeof(p->p_comm));
-	/* XXX psinfo->pr_psargs not yet implemented */
+	lwkt_gettoken(&p->p_token);
+	
+	/* recreate secondary threads */
+	if (type != MAIN) {
+		plimit_lwp_fork(p);	/* force exclusive access */
+		nlp = lwp_fork(curthread->td_lwp, p, RFPROC);
+	}
 
- done:	
+	/* restore saved info */	
+	if ((error = set_regs(nlp, &status->pr_reg)) != 0)
+		goto fail;
+	SIG_CANTMASK(status->pr_sigmask);
+	bcopy(&status->pr_sigmask, &nlp->lwp_sigmask, sizeof(sigset_t));
+	error = set_fpregs(nlp, fpregset);
+	bcopy(tls, &nlp->lwp_thread->td_tls, sizeof *tls);
+
+	kprintf("sigmask %i %i %i %i\n", nlp->lwp_sigmask.__bits[0],
+        	nlp->lwp_sigmask.__bits[1],nlp->lwp_sigmask.__bits[2],nlp->lwp_sigmask.__bits[3]);
+
+	/* schedule the new lwp */
+	if (type != MAIN) {
+		kprintf("xxx Before scheduling\n");	
+		//TODO: restore in SSLEEP state?
+		p->p_usched->resetpriority(nlp);
+		crit_enter();
+		nlp->lwp_stat = LSRUN;
+		p->p_usched->setrunqueue(nlp);
+		crit_exit();
+	}
+
+	lwkt_reltoken(&p->p_token);
+	goto done;
+
+fail:
+	lwp_rb_tree_RB_REMOVE(&p->p_lwp_tree, nlp);
+	--p->p_nthreads;
+	/* lwp_dispose expects an exited lwp, and a held proc */
+	nlp->lwp_flag |= LWP_WEXIT;
+	nlp->lwp_thread->td_flags |= TDF_EXITING;
+	PHOLD(p);
+	lwp_dispose(nlp);
+	lwkt_reltoken(&p->p_token);
+ 
+done:	
 	TRACE_EXIT;
 	return error;
 }
 
-//TODO: copied from kern/kern_fork.c
-// check the code, we don't want to add useless info
-// on recreating a thread
-// import it from kern_fork or make another method for checkpointing module
+//XXX: copied from kern/kern_fork.c
 static struct lwp * 
 lwp_fork(struct lwp *origlp, struct proc *destproc, int flags)
 {
@@ -395,67 +459,6 @@ lwp_fork(struct lwp *origlp, struct proc *destproc, int flags)
 
 
 	return (lp);
-}
-
-static int
-elf_recreate_thread(struct lwp *lp, prpsinfo_t *psinfo, prstatus_t *status,
-		prfpregset_t *fpregset, prsavetls_t *tls)
-{
-	struct proc *p = lp->lwp_proc;
-	struct lwp *nlp;
-	int error;
-
-	/* validate status and psinfo */
-	TRACE_ENTER;
-	if (status->pr_version != PRSTATUS_VERSION ||
-			status->pr_statussz != sizeof(prstatus_t) ||
-			status->pr_gregsetsz != sizeof(gregset_t) ||
-			status->pr_fpregsetsz != sizeof(fpregset_t) ||
-			psinfo->pr_version != PRPSINFO_VERSION ||
-			psinfo->pr_psinfosz != sizeof(prpsinfo_t)) {
-		PRINTF(("status check failed\n"));
-		error = EINVAL;
-		goto done;
-	}
-
-	/* Try to recreate another thread */
-	kprintf("xxx restoring another thread\n");	
-
-	lwkt_gettoken(&p->p_token);
-	plimit_lwp_fork(p);	/* force exclusive access */
-	nlp = lwp_fork(curthread->td_lwp, p, RFPROC);
-	/** append stored info */
-	if ((error = set_regs(nlp, &status->pr_reg)) != 0)
-		goto fail;
-	error = set_fpregs(nlp, fpregset); 
-	bcopy(tls, &nlp->lwp_thread->td_tls, sizeof *tls);
-
-	kprintf("xxx Before scheduling\n");	
-	/*
-	 * Now schedule the new lwp.
-	 */
-	//TODO: restore in SSLEEP state?
-	p->p_usched->resetpriority(nlp);
-	crit_enter();
-	nlp->lwp_stat = LSRUN;
-	p->p_usched->setrunqueue(nlp);
-	crit_exit();
-	lwkt_reltoken(&p->p_token);
-
-	goto done;
-
-fail:
-	lwp_rb_tree_RB_REMOVE(&p->p_lwp_tree, nlp);
-	--p->p_nthreads;
-	/* lwp_dispose expects an exited lwp, and a held proc */
-	nlp->lwp_flag |= LWP_WEXIT;
-	nlp->lwp_thread->td_flags |= TDF_EXITING;
-	PHOLD(p);
-	lwp_dispose(nlp);
-	lwkt_reltoken(&p->p_token);
-done:
-	TRACE_EXIT;
-	return error;
 }
 
 static int 
@@ -626,9 +629,9 @@ elf_getsigs(struct lwp *lp, struct file *fp)
 	}
 	bcopy(&csi->csi_sigacts, p->p_sigacts, sizeof(*p->p_sigacts));
 	bcopy(&csi->csi_itimerval, &p->p_realtimer, sizeof(struct itimerval));
-	SIG_CANTMASK(csi->csi_sigmask);
+//	SIG_CANTMASK(csi->csi_sigmask);
 	/* XXX lwp handle more than one lwp */
-	bcopy(&csi->csi_sigmask, &lp->lwp_sigmask, sizeof(sigset_t));
+//	bcopy(&csi->csi_sigmask, &lp->lwp_sigmask, sizeof(sigset_t));
 	p->p_sigparent = csi->csi_sigparent;
  done:
 	if (csi)
@@ -774,6 +777,7 @@ elf_getfiles(struct lwp *lp, struct file *fp)
 	for (i = 3; i < fdp->fd_nfiles; ++i)
 		kern_close(i);
 
+	kprintf("La restore avem %i\n", filecount);
 	/*
 	 * Scan files to load
 	 */
@@ -787,6 +791,7 @@ elf_getfiles(struct lwp *lp, struct file *fp)
 		if (cfi->cfi_index < 0)
 			continue;
 
+		kprintf("XXX Restoring mm %i from %i of %i\n", cfi->cfi_index, i, filecount);	
 		/*
 		 * Restore a saved file descriptor.  If CKFIF_ISCKPTFD is 
 		 * set the descriptor represents the checkpoint file itself,
@@ -795,6 +800,7 @@ elf_getfiles(struct lwp *lp, struct file *fp)
 		 * instead of trying to restore the original filehandle.
 		 */
 		if (cfi->cfi_ckflags & CKFIF_ISCKPTFD) {
+			kprintf("Esteeee\n");
 			fhold(fp);
 			tempfp = fp;
 			error = 0;

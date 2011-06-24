@@ -1342,7 +1342,7 @@ elf_puthdr(struct lwp *lp, elf_buf_t target, int sig, enum putmode mode,
 	phdr = target_reserve(target, (numsegs + 1) * sizeof(Elf_Phdr), &error);
 
 	noteoff = target->off;
-/* XXX SJG - why wouldn't error = 0 here? */
+	
 	if (error == 0)
 		elf_putallnotes(lp, target, sig, mode);
 	notesz = target->off - noteoff;
@@ -1487,8 +1487,8 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 		status->pr_statussz = sizeof(prstatus_t);
 		status->pr_gregsetsz = sizeof(gregset_t);
 		status->pr_fpregsetsz = sizeof(fpregset_t);
-//		status->pr_savetlssz = sizeof(prsavetls_t);
-		kprintf("xxxx -- tls size %i\n", sizeof(prsavetls_t));	
+		status->pr_savetlssz = sizeof(prsavetls_t);
+		status->pr_sigsetsz = sizeof(sigset_t);
 		status->pr_osreldate = osreldate;
 		status->pr_cursig = sig;
 		/*
@@ -1497,14 +1497,14 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 		 * value.
 		 */
 		status->pr_pid = corelp->lwp_tid;
-		kprintf("xxxx -- store status\n");	
-		kprintf("signal %i pid %i\n", status->pr_cursig, status->pr_pid);	
 		fill_regs(corelp, &status->pr_reg);
 		fill_fpregs(corelp, fpregs);
-
-// XXX SJG	fill_segdescrs(corelp, segdescrs);
-		kprintf("xxx - saving out tls data for first thread\n");
+		bcopy(&corelp->lwp_sigmask, &status->pr_sigmask, sizeof(sigset_t));
 		bcopy(&corelp->lwp_thread->td_tls, tls, sizeof *tls);
+
+		kprintf("xxx sigmask %i %i %i %i\n", corelp->lwp_sigmask.__bits[0],
+			corelp->lwp_sigmask.__bits[1],corelp->lwp_sigmask.__bits[2],corelp->lwp_sigmask.__bits[3]);
+		kprintf("xxx signal %i pid %i\n", status->pr_cursig, status->pr_pid);	
 	}
 	error =
 	    elf_putnote(target, "CORE", NT_PRSTATUS, status, sizeof *status);
@@ -1530,12 +1530,14 @@ elf_putallnotes(struct lwp *corelp, elf_buf_t target, int sig,
 			continue;
 		if (mode != DRYRUN) {
 			status->pr_pid = lp->lwp_tid;
-			kprintf("pid %i\n", status->pr_pid);	
 			fill_regs(lp, &status->pr_reg);
 			fill_fpregs(lp, fpregs);
-// XXX SJG
-			kprintf("xxx - saving out tls data for another thread\n");
+			bcopy(&lp->lwp_sigmask, &status->pr_sigmask, sizeof(sigset_t));
 			bcopy(&lp->lwp_thread->td_tls, tls, sizeof *tls);
+		
+			kprintf("pid %i\n", status->pr_pid);	
+			kprintf("sigmask %i %i %i %i\n", lp->lwp_sigmask.__bits[0],
+				lp->lwp_sigmask.__bits[1],lp->lwp_sigmask.__bits[2],lp->lwp_sigmask.__bits[3]);
 		}
 		error = elf_putnote(target, "CORE", NT_PRSTATUS,
 					status, sizeof *status);
@@ -1593,7 +1595,6 @@ elf_putnote(elf_buf_t target, const char *name, int type,
 static int
 elf_putsigs(struct lwp *lp, elf_buf_t target)
 {
-	/* XXX lwp handle more than one lwp */
 	struct proc *p = lp->lwp_proc;
 	int error = 0;
 	struct ckpt_siginfo *csi;
@@ -1603,8 +1604,6 @@ elf_putsigs(struct lwp *lp, elf_buf_t target)
 		csi->csi_ckptpisz = sizeof(struct ckpt_siginfo);
 		bcopy(p->p_sigacts, &csi->csi_sigacts, sizeof(*p->p_sigacts));
 		bcopy(&p->p_realtimer, &csi->csi_itimerval, sizeof(struct itimerval));
-		bcopy(&lp->lwp_sigmask, &csi->csi_sigmask,
-			sizeof(sigset_t));
 		csi->csi_sigparent = p->p_sigparent;
 	}
 	return(error);
@@ -1627,6 +1626,8 @@ elf_putfiles(struct proc *p, elf_buf_t target, struct file *ckfp)
 	if (cfh) {
 		cfh->cfh_nfiles = 0;		
 	}
+
+	kprintf("XXX We store %i file descriptors\n", p->p_fd->fd_nfiles);
 
 	/*
 	 * ignore STDIN/STDERR/STDOUT.
@@ -1661,6 +1662,7 @@ elf_putfiles(struct proc *p, elf_buf_t target, struct file *ckfp)
 
 		switch(fp->f_type) {
 		case DTYPE_VNODE:
+
 			vp = (struct vnode *)fp->f_data;
 			/*
 			 * it looks like a bug in ptrace is marking 
@@ -1670,6 +1672,7 @@ elf_putfiles(struct proc *p, elf_buf_t target, struct file *ckfp)
 			 */
 			if (vp == NULL || vp->v_mount == NULL)
 				break;
+			kprintf("XXX Storing fd %i\n", i);
 			cfh->cfh_nfiles++;
 			cfi->cfi_index = i;
 			cfi->cfi_fh.fh_fsid = vp->v_mount->mnt_stat.f_fsid;

@@ -63,15 +63,17 @@ typedef struct fpreg fpregset_t;
 #define PRSTATUS_VERSION	2	/* Current version of prstatus_t */
 
 typedef struct prstatus {
-    int		pr_version;		/* Version number of struct (1) */
+    int		pr_version;		    /* Version number of struct (1) */
     size_t	pr_statussz;		/* sizeof(prstatus_t) (1) */
     size_t	pr_gregsetsz;		/* sizeof(gregset_t) (1) */
     size_t	pr_fpregsetsz;		/* sizeof(fpregset_t) (1) */
     int		pr_osreldate;		/* Kernel version (1) */
-    int		pr_cursig;		/* Current signal (1) */
-    pid_t	pr_pid;			/* Process ID (1) */
+    int		pr_cursig;		    /* Current signal (1) */
+    pid_t	pr_pid;			    /* Process ID (1) */
     gregset_t	pr_reg;			/* General purpose registers (1) */
-//    size_t	pr_savetlssz;		/* sizeof(struct savetls) (2) */
+	size_t	pr_savetlssz;		/* sizeof(struct savetls) (2) */
+	size_t pr_sigsetsz;         /* sizeof(sigset_t) (2) */
+	sigset_t pr_sigmask;        /* Signal mask (2) */
 } prstatus_t;
 
 typedef gregset_t prgregset_t[1];

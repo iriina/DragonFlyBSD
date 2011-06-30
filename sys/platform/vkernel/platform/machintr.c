@@ -193,7 +193,7 @@ cpu_mask_all_signals(void)
 {
 	sigblock(sigmask(SIGALRM)|sigmask(SIGIO)|sigmask(SIGQUIT)|
 		 sigmask(SIGUSR1)|sigmask(SIGTERM)|sigmask(SIGWINCH)|
-		 sigmask(SIGUSR2));
+		 sigmask(SIGUSR2)|sigmask(SIGILL));
 }
 
 void

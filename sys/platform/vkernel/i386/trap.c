@@ -1353,7 +1353,7 @@ go_user(struct intrframe *frame)
 {
 	struct trapframe *tf = (void *)&frame->if_gs;
 	int r;
-
+	
 	/*
 	 * Interrupts may be disabled on entry, make sure all signals
 	 * can be received before beginning our loop.
@@ -1391,11 +1391,11 @@ go_user(struct intrframe *frame)
 				tf, &curthread->td_savevext);
 		crit_exit();
 		frame->if_xflags |= PGEX_U;
-#if 0
+#if 0	
 		kprintf("GO USER %d trap %d EVA %08x EIP %08x ESP %08x XFLAGS %02x/%02x\n", 
 			r, tf->tf_trapno, tf->tf_err, tf->tf_eip, tf->tf_esp,
 			tf->tf_xflags, frame->if_xflags);
-#endif
+#endif		
 		if (r < 0) {
 			if (errno != EINTR)
 				panic("vmspace_ctl failed error %d", errno);

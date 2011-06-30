@@ -132,7 +132,15 @@ cothread_thread(void *arg)
 	cothread_t cotd = arg;
 	int dummy = 0;
 
+	/* Masks checkpoint signals */	
+	sigset_t signal_mask;
+	sigemptyset (&signal_mask);
+	sigaddset (&signal_mask, SIGCKPT);
+	sigaddset (&signal_mask, 35);
+	pthread_sigmask (SIG_BLOCK, &signal_mask, NULL);
+	
 	cpu_mask_all_signals(); /* XXX remove me? should already be masked */
+
 	/*
 	 * %fs (aka mycpu) is illegal in cothreads.   Note that %fs is used
 	 * by pthreads.

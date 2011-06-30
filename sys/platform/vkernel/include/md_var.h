@@ -99,6 +99,7 @@ void cpu_unmask_all_signals (void);
 void go_user (struct intrframe *frame);
 
 void init_exceptions(void);
+void init_checkpointing(void);
 void init_kqueue(void);
 void init_fpu(int supports_sse);
 void kern_trap(struct trapframe *);
@@ -116,6 +117,11 @@ struct kqueue_info *kqueue_add(int, void (*)(void *, struct intrframe *), void *
 void kqueue_del(struct kqueue_info *);
 struct kqueue_info *kqueue_add_timer(void (*func)(void *, struct intrframe *), void *data);
 void kqueue_reload_timer(struct kqueue_info *info, int ms);
+
+#define TAPDEV_OFLAGS   (O_RDWR | O_NONBLOCK)
+int netif_open_tap(const char *netif, int *tap_unit, int s);
+int unix_connect(const char *path);
+int netif_set_tapflags(int tap_unit, int f, int s);
 
 
 #endif

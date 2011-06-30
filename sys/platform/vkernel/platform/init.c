@@ -131,15 +131,12 @@ static void init_sys_memory(char *imageFile);
 static void init_kern_memory(void);
 static void init_globaldata(void);
 static void init_vkernel(void);
-static void init_checkpointing(void);
 static void init_disk(char *diskExp[], int diskFileNum, enum vkdisk_type type); 
 static void init_netif(char *netifExp[], int netifFileNum);
 static void writepid(void);
 static void cleanpid(void);
-static int unix_connect(const char *path);
 static void usage_err(const char *ctl, ...);
 static void usage_help(_Bool);
-
 
 static int save_ac;
 static char **save_av;
@@ -373,107 +370,6 @@ main(int ac, char **av)
 	/* NOT REACHED */
 	exit(EX_SOFTWARE);
 }
-
-static void ckptsig(int signo);
-//static void thawsig(int signo);
-
-static void init_checkpointing(void)
-{ 
-	struct sigaction sa;
-	//struct sigaction ss;
-	
-	bzero(&sa, sizeof(sa));
-	sigemptyset(&sa.sa_mask);
-	sa.sa_handler = ckptsig;
-	sigaction(SIGCKPT, &sa, NULL);
-
-#if 0
-	bzero(&ss, sizeof(ss));
-	sigemptyset(&ss.sa_mask);
-	ss.sa_handler = thawsig;
-	sigaction(35, &ss, NULL);
-#endif
-}
-
-#if 0
-static void thawsig(int signo)
-{
-	printf("I was restored :D\n");
-}
-#endif
-
-static void recreate_vmspace(struct proc *p)
-{
-	printf("Restoring vmspace for pid %i\n", p->p_pid);
-	
-	//vm_map_t map = &p->p_vmspace->vm_map;
-		
-	//	lwkt_gettoken(&vm_token);
-	//	lwkt_gettoken(&vmspace_token);
-	//	lwkt_gettoken(&vmobj_token);
-	if (p->p_pid != 0) {
-		printf("xxx pdir %lu \n",vmspace_pmap(p->p_vmspace)->pm_pdirpte);
-		cpu_vmspace_alloc(p->p_vmspace);
-	}
-
-	//	lwkt_reltoken(&vm_token);
-	//	lwkt_reltoken(&vmspace_token);
-	//	lwkt_reltoken(&vmobj_token);
-}
-
-static void remap_kva(void)
-{
-	void *base;
-	void *try;
-
-	try = (void *)KvaStart;
-	base = NULL;
-	base = mmap(try, KERNEL_KVA_SIZE, PROT_READ|PROT_WRITE,
-			MAP_FILE|MAP_SHARED|MAP_VPAGETABLE,
-			MemImageFd, 0);
-	if (base != try) {
-		err(1, "Unable to mmap() kernel virtual memory!");
-		/* NOT REACHED */
-	}
-	madvise(base, KERNEL_KVA_SIZE, MADV_NOSYNC);
-
-	printf("XXX KVM mapped at %p-%p\n", (void *)KvaStart, (void *)KvaEnd);
-	mcontrol(base, KERNEL_KVA_SIZE, MADV_SETMAP,
-			0 | VPTE_R | VPTE_W | VPTE_V);
-}
-
-static void ckptsig(int signo)
-{
-	int r;
-	struct proc *p;
-	cpumask_t map;
-	
-	printf("I was checkpointed :D %p\n", (void*)KvaStart);
-
-	map = mycpu->gd_other_cpus;
-	printf("1\n");
-
-	p = LIST_FIRST(&allproc);
-	PHOLD(p);
-	printf("pdir on restore %lu \n",vmspace_pmap(p->p_vmspace)->pm_pdirpte);
-	PRELE(p);
-
-	msync((void*)KvaStart, KERNEL_KVA_SIZE, MS_SYNC);
-
-	r = sys_checkpoint(CKPT_FREEZE, -1, -1, -1);
-	if (r == 1) {
-		printf("Successfully returned :D\n");
-		remap_kva();
-		printf("Success remap vmspace0\n");
-		p = LIST_FIRST(&allproc);
-    		for (; p != NULL; p = LIST_NEXT(p, p_list)) {	
-			PHOLD(p);
-			printf("pt %i %p\n", p->p_pid, p->p_vmspace);
-			recreate_vmspace(p);	
-			PRELE(p);	
-		}
-	}
-} 
 
 /*
  * Initialize system memory.  This is the virtual kernel's 'RAM'.
@@ -898,7 +794,6 @@ init_disk(char *diskExp[], int diskFileNum, enum vkdisk_type type)
 	}
 }
 
-static
 int
 netif_set_tapflags(int tap_unit, int f, int s)
 {
@@ -1008,8 +903,6 @@ netif_add_tap2brg(int tap_unit, const char *ifbridge, int s)
 	return 0;
 }
 
-#define TAPDEV_OFLAGS	(O_RDWR | O_NONBLOCK)
-
 /*
  * Locate the first unused tap(4) device file if auto mode is requested,
  * or open the user supplied device file, and bring up the corresponding
@@ -1017,7 +910,6 @@ netif_add_tap2brg(int tap_unit, const char *ifbridge, int s)
  *
  * NOTE: Only tap(4) device file is supported currently
  */
-static
 int
 netif_open_tap(const char *netif, int *tap_unit, int s)
 {
@@ -1101,7 +993,7 @@ netif_open_tap(const char *netif, int *tap_unit, int s)
 	return tap_fd;
 }
 
-static int
+int
 unix_connect(const char *path)
 {
 	struct sockaddr_un sunx;

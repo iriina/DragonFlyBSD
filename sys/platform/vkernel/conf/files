@@ -71,6 +71,7 @@ platform/vkernel/i386/exception.c	standard
 platform/vkernel/i386/procfs_machdep.c	standard
 platform/vkernel/i386/fork_tramp.s	standard
 platform/vkernel/platform/init.c	standard
+platform/vkernel/platform/checkpoint.c	standard
 platform/vkernel/platform/globaldata.c	standard
 platform/vkernel/platform/kqueue.c	standard
 platform/vkernel/platform/shutdown.c	standard

@@ -843,7 +843,6 @@ netif_set_tapflags(int tap_unit, int f, int s)
 	return 0;
 }
 
-static
 int
 netif_set_tapaddr(int tap_unit, in_addr_t addr, in_addr_t mask, int s)
 {
@@ -873,7 +872,6 @@ netif_set_tapaddr(int tap_unit, in_addr_t addr, in_addr_t mask, int s)
 	return 0;
 }
 
-static
 int
 netif_add_tap2brg(int tap_unit, const char *ifbridge, int s)
 {
@@ -939,14 +937,17 @@ netif_open_tap(const char *netif, int *tap_unit, int s)
 			snprintf(tap_dev, sizeof(tap_dev), "/dev/%s", netif);
 
 		tap_fd = open(tap_dev, TAPDEV_OFLAGS);
+		printf("we have to open %i\n", tap_fd);
 
 		/*
 		 * If we cannot open normally try to connect to it.
 		 */
 		if (tap_fd < 0)
 			tap_fd = unix_connect(tap_dev);
+		printf("we have to open %i\n", tap_fd);
 
 		if (tap_fd < 0) {
+			printf("UNAAAABLEE\n");
 			warn("Unable to open %s", tap_dev);
 			return -1;
 		}
@@ -1051,14 +1052,17 @@ unix_connect(const char *path)
  */
 static
 int
-netif_init_tap(int tap_unit, in_addr_t *addr, in_addr_t *mask, int s)
+netif_init_tap(int tap_unit, in_addr_t *addr, in_addr_t *mask,
+	in_addr_t *tap_addr, in_addr_t *tap_mask, char **tap_bridge, int s)
 {
-	in_addr_t tap_addr, netmask, netif_addr;
+	in_addr_t t_addr, netif_addr, netmask;
 	int next_netif_addr;
-	char *tok, *masklen_str, *ifbridge;
+	char *tok, *masklen_str;
 
 	*addr = 0;
 	*mask = 0;
+	*tap_addr = 0;
+	*tap_mask = 0;
 
 	tok = strtok(NULL, ":/");
 	if (tok == NULL) {
@@ -1068,11 +1072,11 @@ netif_init_tap(int tap_unit, in_addr_t *addr, in_addr_t *mask, int s)
 		return 0;
 	}
 
-	if (inet_pton(AF_INET, tok, &tap_addr) > 0) {
+	if (inet_pton(AF_INET, tok, &t_addr) > 0) {
 		/*
 		 * tap(4)'s address is supplied
 		 */
-		ifbridge = NULL;
+		*tap_bridge = NULL;
 
 		/*
 		 * If there is next token, then it may be pseudo
@@ -1084,8 +1088,8 @@ netif_init_tap(int tap_unit, in_addr_t *addr, in_addr_t *mask, int s)
 		 * Not tap(4)'s address, assume it as a bridge(4)
 		 * iface name
 		 */
-		tap_addr = 0;
-		ifbridge = tok;
+		t_addr = 0;
+		*tap_bridge = strdup(tok);
 
 		/*
 		 * If there is next token, then it must be pseudo
@@ -1142,13 +1146,15 @@ netif_init_tap(int tap_unit, in_addr_t *addr, in_addr_t *mask, int s)
 back:
 	if (tap_unit < 0) {
 		/* Do nothing */
-	} else if (ifbridge == NULL) {
+	} else if (*tap_bridge == NULL) {
 		/* Set tap(4) address/netmask */
-		if (netif_set_tapaddr(tap_unit, tap_addr, netmask, s) < 0)
+		if (netif_set_tapaddr(tap_unit, t_addr, netmask, s) < 0)
 			return -1;
+		*tap_addr = t_addr;
+		*tap_mask = netmask;
 	} else {
 		/* Tie tap(4) to bridge(4) */
-		if (netif_add_tap2brg(tap_unit, ifbridge, s) < 0)
+		if (netif_add_tap2brg(tap_unit, *tap_bridge, s) < 0)
 			return -1;
 	}
 
@@ -1178,6 +1184,8 @@ init_netif(char *netifExp[], int netifExpNum)
 	for (i = 0; i < netifExpNum; ++i) {
 		struct vknetif_info *info;
 		in_addr_t netif_addr, netif_mask;
+		in_addr_t tap_addr, tap_mask;
+		char *tap_bridge = NULL;
 		int tap_fd, tap_unit;
 		char *netif;
 
@@ -1202,7 +1210,8 @@ init_netif(char *netifExp[], int netifExpNum)
 		 * NB: Rest part of netifExp[i] is passed
 		 *     to netif_init_tap() implicitly.
 		 */
-		if (netif_init_tap(tap_unit, &netif_addr, &netif_mask, s) < 0) {
+		if (netif_init_tap(tap_unit, &netif_addr, &netif_mask,
+			&tap_addr, &tap_mask, &tap_bridge, s) < 0) {
 			/*
 			 * NB: Closing tap(4) device file will bring
 			 *     down the corresponding interface
@@ -1214,6 +1223,14 @@ init_netif(char *netifExp[], int netifExpNum)
 		info = &NetifInfo[NetifNum];
 		info->tap_fd = tap_fd;
 		info->tap_unit = tap_unit;
+		info->tap_addr = tap_addr;
+		info->is_bridged = 0;
+		info->tap_mask = tap_mask;
+		if (tap_bridge != NULL) {
+			printf("Am bridge\n");
+			info->is_bridged = 1;
+			strncpy(info->tap_bridge, tap_bridge, IFNAMSIZ);
+		}
 		info->netif_addr = netif_addr;
 		info->netif_mask = netif_mask;
 

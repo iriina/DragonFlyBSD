@@ -43,6 +43,9 @@
 #ifndef _SYS_VKERNEL_H_
 #include <sys/vkernel.h>
 #endif
+#ifndef _NET_IF_H_
+#include <net/if.h>
+#endif
 
 #define VKNETIF_MAX	16
 #define VKDISK_MAX	16
@@ -50,6 +53,11 @@
 struct vknetif_info {
 	int		tap_fd;
 	int		tap_unit;
+	int 		is_bridged;
+	in_addr_t 	tap_addr;
+	in_addr_t 	tap_mask;	
+	char		tap_bridge[IFNAMSIZ];
+	int 		netif_unit; /* can differ from tap_unit */
 	in_addr_t	netif_addr;
 	in_addr_t	netif_mask;
 };
@@ -122,6 +130,9 @@ void kqueue_reload_timer(struct kqueue_info *info, int ms);
 int netif_open_tap(const char *netif, int *tap_unit, int s);
 int unix_connect(const char *path);
 int netif_set_tapflags(int tap_unit, int f, int s);
+int netif_add_tap2brg(int tap_unit, const char *ifbridge, int s);
+int netif_set_tapaddr(int tap_unit, in_addr_t addr, in_addr_t mask, int s);
+
 
 
 #endif

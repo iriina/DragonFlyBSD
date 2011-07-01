@@ -64,6 +64,7 @@
 #include <machine/cpu.h>
 #include <machine/globaldata.h>
 #include <machine/tls.h>
+#include <machine/cothread.h>
 #include <machine/md_var.h>
 #include <machine/vmparam.h>
 #include <cpu/specialreg.h>
@@ -72,6 +73,7 @@
 #include <net/if_arp.h>
 #include <net/if_var.h>
 #include <net/ethernet.h>
+#include <net/tap/if_tap.h>
 #include <net/bridge/if_bridgevar.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -110,6 +112,9 @@ static void do_checkpoint(void *arg);
 static void thawsig(int signo);
 static void ckpt_netif(void);
 static void restore_netif(void);
+static void netif_down(struct ifnet *ifp);
+static struct ifnet *lookup_ifnet(int unit);
+static int netif_del_tapbrg(int unit, char *bridge, int s);
 #endif
 
 #ifdef VMSPACE_TEST
@@ -319,83 +324,52 @@ static void
 ckpt_netif()
 {
 	struct vknetif_info *info;
-	struct ifbreq ifbr;
-	struct ifdrv ifd;
-	struct ifnet	*ifp;
-	int s;
+	struct ifnet	*ifp; 
+	int s, i;
 
-	/* Set down each interface */
-	TAILQ_FOREACH(ifp, &ifnet, if_link) {
-		printf("Closing %s\n", ifp->if_xname);
-
-		if (ifp->if_flags & IFF_UP) {
-			printf("Setting down %s\n", ifp->if_xname);
-			if (ifp->if_flags & IFF_SMART) {
-				/* Smart drivers twiddle their own routes */
-			} else {
-				crit_enter();
-				if_down(ifp);
-				crit_exit();	
-			}
-			if (ifp->if_ioctl) {
-				ifnet_serialize_all(ifp);
- 				ifp->if_ioctl(ifp, SIOCSIFFLAGS, NULL, NULL);
- 				ifnet_deserialize_all(ifp);
-			}
- 			//getmicrotime(&ifp->if_lastchange);
-			break;
- 		}
-	}
-
-	printf("closing tap fds\n");
-
-	/* Save any usefull informations about tap devices */
-	//TODO: Do we need to store at least the config type?
-	// What about tap fd physical address?
-
-	/* Close each tap file descriptor */
-	//TODO: treat all the configuration types (e.g. remove interface from bridge)	
-	info = &NetifInfo[0];
 	s = socket(AF_INET, SOCK_DGRAM, 0);	/* for ioctl(SIOC) */
 	if (s < 0)
 		return;
-	printf("Bye bye network! %i %i\n", info->tap_fd, info->tap_unit);
 
-	printf("Removing interface from bridge\n");
-	bzero(&ifbr, sizeof(ifbr));
-	snprintf(ifbr.ifbr_ifsname, sizeof(ifbr.ifbr_ifsname),
-			"tap%d", info->tap_unit);
+	for (i = 0; i < NetifNum; ++i) {
+		info = &NetifInfo[i];
 
-	bzero(&ifd, sizeof(ifd));
-	strlcpy(ifd.ifd_name, "bridge0", sizeof(ifd.ifd_name));
-	ifd.ifd_cmd = BRDGDEL;
-	ifd.ifd_len = sizeof(ifbr);
-	ifd.ifd_data = &ifbr;
-
-	if (ioctl(s, SIOCSDRVSPEC, &ifd) < 0) {
-		/*
-		 * 'errno == EEXIST' means that the tap(4) is already
-		 * a member of the bridge(4)
-		 */
-		if (errno != EEXIST) {
-			warn("ioctl(bridge0, SIOCSDRVSPEC) failed");
-			close(s);
-			return;
+		/* Find the associated pseudo interface
+		 * if ifp == NULL no interface was attached to the tap 
+	 	 * XXX Find a better solution for lookup vkes from tap */ 
+		ifp = lookup_ifnet(info->netif_unit); 
+		if (ifp == NULL) {	
+			printf("[CKPT] Unable to find ifnet interface for vke%d\n",
+					info->netif_unit);
+		} else {
+			netif_down(ifp);
 		}
+
+		/* Remove tap interface from the bridge if it is tied to one */
+		if (info->is_bridged) {
+			printf("[CKPT] Removing interface tap%d from %s\n",
+				info->tap_unit, info->tap_bridge);
+			if (netif_del_tapbrg(info->tap_unit, info->tap_bridge, s) != 0) {
+				printf("[CKPT] Unable to remove interface tap%d from %s\n",
+					info->tap_unit, info->tap_bridge);
+				continue;
+			}
+		}
+
+		/* Set tap interface down */
+		printf("[CKPT] Setting tap%d interface down\n", info->tap_unit);
+		if (netif_set_tapflags(info->tap_unit, -IFF_UP, s) != 0) {
+			printf("[CKPT] Failed to bring down tap%d interface\n", info->tap_unit);
+			continue;
+		}
+
+		/* Close tap file descriptor */
+		close(info->tap_fd);
+		printf("[CKPT] Interface tap%d was checkpointed\n\n", info->tap_unit);
 	}
 
-	printf("Removed interface from bridge\n");
-	
-	if (netif_set_tapflags(info->tap_unit, -IFF_UP, s) != 0) {
-		printf("Failed to bring down the tap interface\n");
-		close(s);
-		return;
-	}
-
-	printf("set tap down\n");
-	
 	close(s);	
-	close(info->tap_fd);
+
 }
 
 /*
@@ -404,64 +378,122 @@ ckpt_netif()
 static void
 restore_netif()
 {
-	int s;
+	int s, i;
 	struct vknetif_info *info;
-	struct ifbreq ifbr;
-	struct ifdrv ifd;
+	char tap_if[IFNAMSIZ];
 	int tap_fd, tap_unit;
 	
-	info = &NetifInfo[0];
-	
-	printf("Restoring network\n");
-
 	s = socket(AF_INET, SOCK_DGRAM, 0);	/* for ioctl(SIOC) */
 	if (s < 0)
 		return;
-	/*
-       	 * Open tap(4) device file and bring up the
-       	 * corresponding interface
-       	 */
-       	tap_fd = netif_open_tap("tap1", &tap_unit, s);
-       	if (tap_fd < 0)
-		goto end;
+	
+	for (i = 0; i < NetifNum; ++i) {
+		info = &NetifInfo[i];
+		
+		/* Open device file and bring up the tap interface */
+		printf("[THAW] Opening tap%d interface.\n", info->tap_unit);
+		bzero(tap_if, sizeof(tap_if));
+		snprintf(tap_if, IFNAMSIZ, "tap%d", info->tap_unit); 
+		tap_fd = netif_open_tap(tap_if, &tap_unit, s);
+		if (tap_fd < 0) {
+			printf("Failed to open tap%d interface\n", info->tap_unit);
+			continue;
+		}
 
-	printf("Opened tap\n");
+		if (info->is_bridged) {
+			printf("[THAW] Adding tap%d to %s\n", info->tap_unit, info->tap_bridge); 
+			if (netif_add_tap2brg(info->tap_unit, info->tap_bridge, s) < 0) {
+				printf("[THAW] Failed to add tap%d to %s\n", info->tap_unit, info->tap_bridge); 
+				continue;
+			}
+		} else {
+			if (netif_set_tapaddr(tap_unit, info->tap_addr, info->tap_mask, s) < 0) {
+				printf("[THAW] Failed to set address for tap%d\n", info->tap_unit); 
+				continue;
+			}		
+		}
+
+		info->tap_fd = tap_fd;
+
+		//XXX reset interfaces UP
+		printf("[THAW] Restored interface tap%d\n\n", info->tap_unit);
+	}
+	
+	close(s);
+}
+
+/*
+ * XXX Find a way to restore the MAC address and baudrate
+ * from the newly open tap (these can change between checkpoint
+ * and restore e.g. if we restore the vkernel on another machine)
+ * without a complete deattach from ethernet (maybe some ioctl??)
+ */
+static void 
+netif_down(struct ifnet *ifp)
+{
+	/* Set the vke interface down */
+	if (ifp->if_flags & IFF_UP) {
+		printf("[CKPT] Setting %s down.\n", ifp->if_xname);
+		
+		if (ifp->if_flags & IFF_SMART) {
+			/* Smart drivers twiddle their own routes */
+		} else {
+			crit_enter();
+			if_down(ifp);
+			crit_exit();	
+		}
+		if (ifp->if_ioctl) {
+			ifnet_serialize_all(ifp);
+			ifp->if_ioctl(ifp, SIOCSIFFLAGS, NULL, NULL);
+			ifnet_deserialize_all(ifp);
+		}
+		//getmicrotime(&ifp->if_lastchange);
+	}
+
+	/* Detach Ethernet interface
+	 * We have to detach it in order to 
+	 * be restored with the new tap's mtu and MAC address */ 
+	//ether_ifdetach(ifp);
+}
+
+static int
+netif_del_tapbrg(int unit, char *bridge, int s)
+{
+	struct ifdrv ifd;
+	struct ifbreq ifbr;
 
 	bzero(&ifbr, sizeof(ifbr));
 	snprintf(ifbr.ifbr_ifsname, sizeof(ifbr.ifbr_ifsname),
-			"tap%d", info->tap_unit);
+			"tap%d", unit);
 
 	bzero(&ifd, sizeof(ifd));
-	strlcpy(ifd.ifd_name, "bridge0", sizeof(ifd.ifd_name));
-	ifd.ifd_cmd = BRDGADD;
+	strlcpy(ifd.ifd_name, bridge, sizeof(ifd.ifd_name));
+	ifd.ifd_cmd = BRDGDEL;
 	ifd.ifd_len = sizeof(ifbr);
 	ifd.ifd_data = &ifbr;
 
 	if (ioctl(s, SIOCSDRVSPEC, &ifd) < 0) {
-		/*
-		 * 'errno == EEXIST' means that the tap(4) is already
-		 * a member of the bridge(4)
-		 */
-		if (errno != EEXIST) {
-			warn("ioctl(bridge0, SIOCSDRVSPEC) failed");
-			goto end;
-		}
+		//xxx ignore errno not exists?
+		return -1;
 	}
-       	
-	printf("Inited tap\n");
 
-       	info->tap_fd = tap_fd;
-       	info->tap_unit = tap_unit;
-       	info->netif_addr = 0;
-       	info->netif_mask = 0;
+	return 0;
+}
 
-	//TODO: reset interfaces UP
-//	if (vke_attach(info, 0) != 0) {
-//		printf("Failed to attach to vke\n");
-//	}
-	printf("Network returned\n");
-end:
-	close(s);
+static struct ifnet *
+lookup_ifnet(int unit)
+{
+	struct ifnet *ifp;
+	char	xname[IFNAMSIZ];
+
+	TAILQ_FOREACH(ifp, &ifnet, if_link) {
+		ksnprintf(xname, IFNAMSIZ, "%s%d", "vke", unit);
+
+		if (strncmp(ifp->if_xname, xname, IFNAMSIZ) == 0)
+			return ifp;
+	}
+		
+	return NULL;
 }
 
 #endif

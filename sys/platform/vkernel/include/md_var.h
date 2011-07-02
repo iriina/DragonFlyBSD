@@ -57,7 +57,6 @@ struct vknetif_info {
 	in_addr_t 	tap_addr;
 	in_addr_t 	tap_mask;	
 	char		tap_bridge[IFNAMSIZ];
-	int 		netif_unit; /* can differ from tap_unit */
 	in_addr_t	netif_addr;
 	in_addr_t	netif_mask;
 };

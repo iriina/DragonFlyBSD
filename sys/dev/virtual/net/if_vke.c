@@ -64,50 +64,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 
-#define VKE_DEVNAME		"vke"
+#include "if_vke.h"
 
 #define VKE_CHUNK	8 /* number of mbufs to queue before interrupting */
-
-#define NETFIFOSIZE	256
-#define NETFIFOMASK	(NETFIFOSIZE -1)
-#define NETFIFOINDEX(u) ((u) & NETFIFOMASK)
-
-#define VKE_COTD_RUN	0
-#define VKE_COTD_EXIT	1
-#define VKE_COTD_DEAD	2
-
-struct vke_fifo {
-	struct mbuf	*array[NETFIFOSIZE];
-	int		rindex;
-	int		windex;
-};
-typedef struct vke_fifo *fifo_t;
-
-struct vke_softc {
-	struct arpcom		arpcom;
-	int			sc_fd;
-	int			sc_unit;
-
-	cothread_t		cotd_tx;
-	cothread_t		cotd_rx;
-
-	int			cotd_tx_exit;
-	int			cotd_rx_exit;
-
-	void			*sc_txbuf;
-	int			sc_txbuf_len;
-
-	fifo_t			sc_txfifo;
-	fifo_t			sc_txfifo_done;
-	fifo_t			sc_rxfifo;
-
-	struct sysctl_ctx_list	sc_sysctl_ctx;
-	struct sysctl_oid	*sc_sysctl_tree;
-
-	int			sc_tap_unit;	/* unit of backend tap(4) */
-	in_addr_t		sc_addr;	/* address */
-	in_addr_t		sc_mask;	/* netmask */
-};
 
 static void	vke_start(struct ifnet *);
 static void	vke_init(void *);
@@ -139,8 +98,9 @@ vke_sysinit(void *arg __unused)
 
 	unit = 0;
 	for (i = 0; i < NetifNum; ++i) {
-		if (vke_attach(&NetifInfo[i], unit) == 0)
+		if (vke_attach(&NetifInfo[i], unit) == 0) {
 			++unit;
+		}
 	}
 }
 SYSINIT(vke, SI_SUB_DRIVERS, SI_ORDER_MIDDLE, vke_sysinit, NULL);

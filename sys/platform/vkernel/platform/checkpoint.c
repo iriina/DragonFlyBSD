@@ -90,6 +90,8 @@
 #include <assert.h>
 #include <sysexits.h>
 
+#include "../../../dev/virtual/net/if_vke.h"
+
 /**
  * Tests the network interfaces states save and restore
  * Doesn't do a real checkpoint (for the moment), only simulates it through 
@@ -335,12 +337,11 @@ ckpt_netif()
 		info = &NetifInfo[i];
 
 		/* Find the associated pseudo interface
-		 * if ifp == NULL no interface was attached to the tap 
-	 	 * XXX Find a better solution for lookup vkes from tap */ 
-		ifp = lookup_ifnet(info->netif_unit); 
+		 * if ifp == NULL no interface was attached to the tap */
+		ifp = lookup_ifnet(info->tap_unit); 
 		if (ifp == NULL) {	
-			printf("[CKPT] Unable to find ifnet interface for vke%d\n",
-					info->netif_unit);
+			printf("[CKPT] Unable to find ifnet interface for tap%d\n",
+					info->tap_unit);
 		} else {
 			netif_down(ifp);
 		}
@@ -480,17 +481,21 @@ netif_del_tapbrg(int unit, char *bridge, int s)
 	return 0;
 }
 
+/*
+ * Looks up an interface by its backing tap unit
+ */
 static struct ifnet *
 lookup_ifnet(int unit)
 {
 	struct ifnet *ifp;
-	char	xname[IFNAMSIZ];
+	struct vke_softc *vk;
 
 	TAILQ_FOREACH(ifp, &ifnet, if_link) {
-		ksnprintf(xname, IFNAMSIZ, "%s%d", "vke", unit);
-
-		if (strncmp(ifp->if_xname, xname, IFNAMSIZ) == 0)
-			return ifp;
+		if (strncmp(ifp->if_dname, VKE_DEVNAME, IFNAMSIZ) == 0) {
+			vk = (struct vke_softc *)ifp->if_softc;
+			if (vk->sc_tap_unit == unit)
+				return ifp; 			
+		}
 	}
 		
 	return NULL;

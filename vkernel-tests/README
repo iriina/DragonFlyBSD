@@ -1,0 +1,8 @@
+Tests used for testing vkernel checkpoint.
+
+vmspaces:
+ - a syscall in a module, that can be called from the userspace vkernel
+in order to analyze the state of its vmspaces.
+
+multithread:
+ - test for analysing a correct checkpoint and restore of a multithreaded program.
